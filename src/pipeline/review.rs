@@ -4,7 +4,8 @@ use anyhow::Result;
 use futures::future::join_all;
 
 use crate::config::Config;
-use crate::github::{comment, pack, Github, PrRef};
+use crate::forge::Forge;
+use crate::github::PrRef;
 use crate::llm::{Llm, Tier};
 use crate::pipeline::{compose, Confirmed, Eligibility, LensReport, Verdict};
 use crate::prompts;
@@ -46,8 +47,8 @@ impl RunSummary {
     }
 }
 
-pub async fn run(
-    gh: &Github,
+pub async fn run<F: Forge>(
+    forge: &F,
     llm: &Llm,
     cfg: &Config,
     telemetry: &Telemetry,
@@ -57,7 +58,7 @@ pub async fn run(
     let wall = Instant::now();
 
     // ── Stage 0: context pack + deterministic eligibility ──────────────────
-    let pack = pack::build(gh, pr, cfg).await?;
+    let pack = forge.build_pack(pr, cfg).await?;
     eprintln!(
         "greybeard: pack built in {}ms ({} changed files, {} chars)",
         pack.fetch_ms,
@@ -229,12 +230,11 @@ pub async fn run(
         println!("--- dry run: comment body ---\n{body}");
     } else {
         // Cheap "still open?" re-check replaces the old eligibility re-check agent.
-        if !args.force && !still_open(gh, pr).await? {
+        if !args.force && !forge.still_open(pr).await? {
             println!("skipped: PR closed while reviewing — not posting");
             return Ok(RunSummary::skipped("PR closed while reviewing", wall, telemetry));
         }
-        let existing_id = pack.existing_comment.as_ref().map(|(id, _)| id.as_str());
-        let url = comment::upsert(gh, &pack.pr_node_id, existing_id, &body).await?;
+        let url = forge.upsert_comment(&pack, &body).await?;
         println!("posted: {url}");
     }
 
@@ -257,20 +257,6 @@ pub async fn run(
         duration: wall.elapsed(),
         usage: telemetry.totals(),
     })
-}
-
-async fn still_open(gh: &Github, pr: &PrRef) -> Result<bool> {
-    const QUERY: &str = r#"
-query($owner:String!,$repo:String!,$number:Int!){
-  repository(owner:$owner,name:$repo){ pullRequest(number:$number){ state } }
-}"#;
-    let data = gh
-        .graphql(
-            QUERY,
-            serde_json::json!({"owner": pr.owner, "repo": pr.repo, "number": pr.number}),
-        )
-        .await?;
-    Ok(data["repository"]["pullRequest"]["state"] == "OPEN")
 }
 
 fn short_path(path: &str) -> String {

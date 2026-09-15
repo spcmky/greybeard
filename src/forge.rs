@@ -5,23 +5,50 @@
 //! one place. Today GitHub is the only implementation; the GitLab backend is
 //! specified in `docs/GITLAB.md`.
 //!
-//! When GitLab lands, `connect*` will return a `Box<dyn Forge>` (the trait is
-//! sketched in the design doc) and the pipeline will be generic over it. Until
-//! then these return the concrete GitHub client — the dispatch point is what
-//! matters for now.
+//! The pipeline is generic over the [`Forge`] trait, so a review runs against
+//! any backend that implements it. `connect*` returns the concrete GitHub
+//! client today; when GitLab lands, they switch to a dispatch enum (or
+//! `Box<dyn Forge>`) covering both — a change in this one place, with the
+//! pipeline untouched.
 
 use anyhow::{bail, Result};
 
-use crate::config::{Config, Forge};
-use crate::github::Github;
+use crate::config::{Config, Forge as ForgeKind};
+use crate::github::{Github, PrRef};
+use crate::pack::ContextPack;
+
+/// A code host the review pipeline can run against. The pipeline never names a
+/// concrete backend — it fetches the pack, posts the comment, and re-checks
+/// liveness entirely through this seam, so adding GitLab is a new impl, not a
+/// pipeline change.
+///
+/// Native `async fn`s (not `async-trait`): the pipeline is generic over
+/// `F: Forge`, never `dyn Forge`, so the concrete futures are monomorphized —
+/// no boxing, no extra dependency.
+#[allow(async_fn_in_trait)]
+pub trait Forge {
+    /// How this client authenticated — surfaced by the `auth-check` command.
+    fn auth_mode(&self) -> &'static str;
+
+    /// Fetch everything for `pr` and render the deterministic context pack.
+    async fn build_pack(&self, pr: &PrRef, cfg: &Config) -> Result<ContextPack>;
+
+    /// Create the single Greybeard comment, or update it in place; returns its
+    /// URL. Never stacks a second comment.
+    async fn upsert_comment(&self, pack: &ContextPack, body: &str) -> Result<String>;
+
+    /// Cheap "is this change still open?" re-check, run just before posting so
+    /// a PR closed mid-review is not commented on.
+    async fn still_open(&self, pr: &PrRef) -> Result<bool>;
+}
 
 /// Fail early and clearly for a forge that has no backend yet. Pure (no IO), so
 /// CLI and serve startup can both gate on it before doing any work — and it's
 /// unit-testable without constructing a client.
-pub fn ensure_supported(forge: Forge) -> Result<()> {
+pub fn ensure_supported(forge: ForgeKind) -> Result<()> {
     match forge {
-        Forge::GitHub => Ok(()),
-        Forge::GitLab => bail!(
+        ForgeKind::GitHub => Ok(()),
+        ForgeKind::GitLab => bail!(
             "GREYBEARD_FORGE=gitlab is not implemented yet — the GitLab backend is \
              specified in docs/GITLAB.md. Set GREYBEARD_FORGE=github (the default) to run."
         ),

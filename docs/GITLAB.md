@@ -68,20 +68,24 @@ pub trait Forge {
 }
 ```
 
-`connect*` in `src/forge.rs` becomes `Result<Box<dyn Forge>>`. `pack.rs` splits
-into a **forge-agnostic renderer** (structured diff/blame/comment types → the
-deterministic pack string) and a **forge-specific fetcher** (the API calls that
-fill those types). Most of the rendering is genuinely shared (e.g. `render_blame`
-already works over a forge-neutral tuple), but three things in today's `pack.rs`
-are GitHub-shaped and **must change**, not "stay shared":
+The `pack.rs` split landed in phase 2: a **forge-agnostic renderer**
+(`src/pack.rs`: structured diff/blame/comment types → the deterministic pack
+string) and a **forge-specific fetcher** (`src/github/pack.rs`: the API calls
+that fill those types). Most of the rendering was genuinely shared (e.g.
+`render_blame` already worked over a forge-neutral tuple). `connect*` in
+`src/forge.rs` still returns the concrete `Github` (the pipeline is generic over
+`F: Forge`); phase 3 switches it to a dispatch enum — or `Box<dyn Forge>` — once
+a second backend exists. Three things in the old `pack.rs` were GitHub-shaped:
 
 - **`ContextPack.pr_node_id`** — a GraphQL node id needed only for GitHub's
-  comment mutations. GitLab uses a numeric note id from a different call. Move it
-  off `ContextPack` into a forge-owned `CommentAnchor` (see `upsert_comment`).
-- **`render_checks`** — reads raw GraphQL JSON shapes (`__typename`, `CheckRun`,
-  `StatusContext`) directly; it's a GraphQL parser, not a renderer over a type.
-  GitLab pipelines have a different shape, so it must be rewritten against a
-  normalized `Vec<CheckStatus>` both fetchers produce.
+  comment mutations. GitLab uses a numeric note id from a different call. *(Phase
+  2 left it on `ContextPack` — `upsert_comment` reads it plus `existing_comment`
+  there.)* Phase 3 moves it into a forge-owned `CommentAnchor` (see
+  `upsert_comment`) once GitLab needs the divergent shape.
+- **`render_checks`** — *(done in phase 2)* the GraphQL parsing now lives in the
+  GitHub fetcher (`checks_from_graphql`), which produces a normalized
+  `CheckRollup { overall, rows }`; `pack::render_checks` renders that type. The
+  GitLab fetcher just has to produce a `CheckRollup` from its pipeline/job shape.
 - **`ContextPack.pr: PrRef`** — the GitHub ref type, used directly in rendering;
   becomes `ChangeRef`.
 
@@ -183,10 +187,21 @@ full path either way.
    the GitHub client's REST/GraphQL base URLs, so GitHub Enterprise works), a
    single `connect` dispatch in `src/forge.rs` with an early `ensure_supported`
    gate, and this doc. GitHub behavior on github.com unchanged.
-2. **Extract the `Forge` trait.** Define it; make `Github` implement it; split
-   `pack.rs` into shared renderer + GitHub fetcher; make the pipeline generic
-   over `&dyn Forge`. Pure refactor, no behavior change — the existing suite
-   must stay green.
+2. **Extract the `Forge` trait (done).** `Forge` lives in `src/forge.rs` with
+   `auth_mode`/`build_pack`/`upsert_comment`/`still_open`; `Github` implements
+   it in `src/github/mod.rs`. `pack.rs` split: `src/pack.rs` is the
+   forge-agnostic renderer + types (`render`, `PackData`, `CheckRollup`, all the
+   budgeting helpers), `src/github/pack.rs` is the GitHub fetcher that fills
+   `PackData` and calls the shared `render` (old `github::pack::*` paths kept as
+   re-exports so nothing else moved). The pipeline (`review::run<F: Forge>`) is
+   generic over the trait. Deviations from the sketch below, all deliberate:
+   the pipeline is **generic over `F: Forge`, not `Box<dyn Forge>`** — native
+   `async fn` in traits monomorphizes cleanly, so no `async-trait` dependency
+   and no vtable; `render_checks` is already normalized (see below);
+   `ChangeRef`/`parse_ref`, the `CommentAnchor` split, and the webhook trait
+   methods stay deferred to phase 3 (`PrRef` and `ContextPack.pr_node_id` carry
+   through unchanged for now). Pure refactor — all 24 tests stay green, clippy
+   clean under `-D warnings`.
 3. **GitLab backend.** `src/gitlab/` implementing the trait: REST v4 client,
    MR pack fetch, notes upsert, `PRIVATE-TOKEN` auth, `X-Gitlab-Token` +
    `Merge Request Hook` / `Note Hook` webhook, MR-URL parsing.
