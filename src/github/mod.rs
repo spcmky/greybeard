@@ -60,7 +60,12 @@ impl Github {
             return Ok(Self { http, token, auth_mode: "app" });
         }
 
-        let token = match std::env::var("GITHUB_TOKEN").or_else(|_| std::env::var("GH_TOKEN")) {
+        // GREYBEARD_TOKEN is the forge-neutral name; GITHUB_TOKEN / GH_TOKEN
+        // stay supported so existing setups keep working.
+        let token = match std::env::var("GREYBEARD_TOKEN")
+            .or_else(|_| std::env::var("GITHUB_TOKEN"))
+            .or_else(|_| std::env::var("GH_TOKEN"))
+        {
             Ok(t) if !t.is_empty() => t,
             _ => {
                 let out = tokio::process::Command::new("gh")

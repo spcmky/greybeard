@@ -12,7 +12,8 @@ use serde_json::{json, Value};
 
 use crate::config::Config;
 use crate::events;
-use crate::github::{Github, PrRef};
+use crate::forge;
+use crate::github::PrRef;
 use crate::llm::Llm;
 use crate::metrics::METRICS;
 use crate::pipeline::review::{self, ReviewArgs, RunSummary};
@@ -380,7 +381,7 @@ async fn run_review(
     installation: Option<u64>,
     telemetry: &Telemetry,
 ) -> Result<RunSummary> {
-    let gh = Github::for_installation(installation).await?;
+    let gh = forge::connect_installation(cfg, installation).await?;
     let llm = Llm::new(cfg.clone(), telemetry.clone()).await?;
     review::run(&gh, &llm, cfg, telemetry, pr, &ReviewArgs { dry_run: false, force }).await
 }

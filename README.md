@@ -39,6 +39,8 @@ zero on repeat calls means a nondeterminism bug crept into the pack renderer.
 1. **Local review** — run the CLI (or `docker compose`) against a PR from your machine.
 2. **Automatic review** — a GitHub App + webhook service reviews every PR on open/update. Deploy it with the bundled [Helm chart](helm/greybeard) or [`docker-compose.yml`](docker-compose.yml).
 
+Runs against **GitHub** today; the forge is selected by `GREYBEARD_FORGE` and **GitLab** support is [in design](docs/GITLAB.md).
+
 ## Usage
 
 ```sh
@@ -125,12 +127,15 @@ internet-facing ingress to `/webhook` + `/health`.
 
 | Var | Meaning | Default |
 | --- | --- | --- |
+| `GREYBEARD_FORGE` | code host: `github` or `gitlab` | `github` (GitLab is [in design](docs/GITLAB.md), not yet implemented) |
+| `GREYBEARD_TOKEN` | forge access token (`GITHUB_TOKEN` / `GH_TOKEN` still accepted) | falls back to `gh auth token` |
+| `GREYBEARD_FORGE_URL` | base URL for a self-hosted forge (GH Enterprise / self-managed GitLab) | the forge's public host |
 | `GREYBEARD_PROVIDER` | `anthropic` or `bedrock` | `anthropic` if `ANTHROPIC_API_KEY` set, else `bedrock` |
 | `ANTHROPIC_API_KEY` | Anthropic API key (provider=anthropic) | — |
 | `GREYBEARD_LENS_MODEL` | strong model for the 6 lenses | `claude-opus-5` (anthropic); **required** for bedrock, e.g. `us.anthropic.claude-opus-5` |
 | `GREYBEARD_VERIFY_MODEL` | model for eligibility + per-finding verification (runs at low effort) | the lens model — a weak verifier suppresses real findings |
 | `AWS_REGION` / `AWS_DEFAULT_REGION` | Bedrock region | `us-east-2` |
-| `GITHUB_TOKEN` / `GH_TOKEN` | GitHub user token | falls back to `gh auth token` |
+| `GITHUB_TOKEN` / `GH_TOKEN` | GitHub token — alias for `GREYBEARD_TOKEN` | falls back to `gh auth token` |
 | `GREYBEARD_APP_ID` + `GREYBEARD_APP_PRIVATE_KEY` (pem path) + `GREYBEARD_APP_INSTALLATION_ID` | GitHub App identity — when set it takes precedence and comments post as the app bot; in serve mode the webhook payload's installation ID overrides the env pin | unset (user token) |
 | `GREYBEARD_MAX_CONCURRENT` / `GREYBEARD_DAILY_REVIEW_LIMIT` | serve-mode spend guardrails | 2 / 50 per UTC day |
 | `GREYBEARD_LOG_FILE` | pod-local JSONL run log | `greybeard-runs.jsonl` |

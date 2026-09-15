@@ -403,3 +403,14 @@ fn price_cost_math() {
     };
     assert!((p.cost_usd(&u) - 11.0).abs() < 1e-9);
 }
+
+#[test]
+fn forge_parses_names_and_rejects_unknown() {
+    use greybeard::config::Forge;
+    assert_eq!(Forge::parse("github").unwrap(), Forge::GitHub);
+    assert_eq!(Forge::parse("GitHub").unwrap(), Forge::GitHub);
+    assert_eq!(Forge::parse("gh").unwrap(), Forge::GitHub);
+    assert_eq!(Forge::parse("gitlab").unwrap(), Forge::GitLab);
+    assert_eq!(Forge::parse(" GL ").unwrap(), Forge::GitLab);
+    assert!(Forge::parse("bitbucket").is_err());
+}

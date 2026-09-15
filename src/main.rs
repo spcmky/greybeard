@@ -2,7 +2,8 @@ use anyhow::Result;
 use clap::{Parser, Subcommand};
 
 use greybeard::config::Config;
-use greybeard::github::{self, Github, PrRef};
+use greybeard::forge;
+use greybeard::github::{self, PrRef};
 use greybeard::llm::Llm;
 use greybeard::pipeline::review::{self, ReviewArgs};
 use greybeard::telemetry::Telemetry;
@@ -48,7 +49,7 @@ async fn main() -> Result<()> {
         Command::Review { pr_url, dry_run, force } => {
             let cfg = Config::from_env()?;
             let pr = PrRef::parse(&pr_url)?;
-            let gh = Github::new().await?;
+            let gh = forge::connect(&cfg).await?;
             let telemetry = Telemetry::new();
             let llm = Llm::new(cfg.clone(), telemetry.clone()).await?;
             review::run(&gh, &llm, &cfg, &telemetry, &pr, &ReviewArgs { dry_run, force })
@@ -60,7 +61,8 @@ async fn main() -> Result<()> {
             greybeard::server::serve(cfg, port).await
         }
         Command::AuthCheck => {
-            let gh = Github::new().await?;
+            let cfg = Config::from_env()?;
+            let gh = forge::connect(&cfg).await?;
             println!("auth mode: {}", gh.auth_mode);
             match gh.graphql("query{viewer{login}}", serde_json::json!({})).await {
                 Ok(d) => println!("authenticated as: {}", d["viewer"]["login"].as_str().unwrap_or("?")),
@@ -73,7 +75,7 @@ async fn main() -> Result<()> {
         Command::Pack { pr_url } => {
             let cfg = Config::from_env()?;
             let pr = PrRef::parse(&pr_url)?;
-            let gh = Github::new().await?;
+            let gh = forge::connect(&cfg).await?;
             let pack = github::pack::build(&gh, &pr, &cfg).await?;
             eprintln!(
                 "pack: {} chars, {} files, fetched in {}ms",
