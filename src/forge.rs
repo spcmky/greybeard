@@ -30,6 +30,11 @@ pub trait Forge {
     /// How this client authenticated — surfaced by the `auth-check` command.
     fn auth_mode(&self) -> &'static str;
 
+    /// The authenticated identity (login/username), for `auth-check`. May error
+    /// for credentials that can't resolve one (e.g. a GitHub App installation
+    /// token) — callers treat that as non-fatal.
+    async fn whoami(&self) -> Result<String>;
+
     /// Fetch everything for `pr` and render the deterministic context pack.
     async fn build_pack(&self, pr: &PrRef, cfg: &Config) -> Result<ContextPack>;
 
@@ -42,27 +47,94 @@ pub trait Forge {
     async fn still_open(&self, pr: &PrRef) -> Result<bool>;
 }
 
+/// Static dispatch over the available backends. `connect*` returns this so the
+/// pipeline (generic over `F: Forge`) runs against whichever forge the config
+/// selects — with no `dyn`/vtable and no `async-trait` dependency.
+pub enum ForgeClient {
+    GitHub(Github),
+    GitLab(crate::gitlab::Gitlab),
+}
+
+impl Forge for ForgeClient {
+    fn auth_mode(&self) -> &'static str {
+        match self {
+            ForgeClient::GitHub(g) => g.auth_mode(),
+            ForgeClient::GitLab(g) => g.auth_mode(),
+        }
+    }
+    async fn whoami(&self) -> Result<String> {
+        match self {
+            ForgeClient::GitHub(g) => g.whoami().await,
+            ForgeClient::GitLab(g) => g.whoami().await,
+        }
+    }
+    async fn build_pack(&self, pr: &PrRef, cfg: &Config) -> Result<ContextPack> {
+        match self {
+            ForgeClient::GitHub(g) => g.build_pack(pr, cfg).await,
+            ForgeClient::GitLab(g) => g.build_pack(pr, cfg).await,
+        }
+    }
+    async fn upsert_comment(&self, pack: &ContextPack, body: &str) -> Result<String> {
+        match self {
+            ForgeClient::GitHub(g) => g.upsert_comment(pack, body).await,
+            ForgeClient::GitLab(g) => g.upsert_comment(pack, body).await,
+        }
+    }
+    async fn still_open(&self, pr: &PrRef) -> Result<bool> {
+        match self {
+            ForgeClient::GitHub(g) => g.still_open(pr).await,
+            ForgeClient::GitLab(g) => g.still_open(pr).await,
+        }
+    }
+}
+
+/// Parse a review target URL for the configured forge into a [`PrRef`]
+/// (GitHub PR URL, or GitLab MR URL with its nested namespace + `/-/`).
+pub fn parse_ref(cfg: &Config, url: &str) -> Result<PrRef> {
+    match cfg.forge {
+        ForgeKind::GitHub => PrRef::parse(url),
+        ForgeKind::GitLab => crate::gitlab::parse_mr_url(url),
+    }
+}
+
+/// Whether the configured forge can run the webhook service. GitLab review
+/// works from the CLI, but its webhook parsing (X-Gitlab-Token, Merge Request /
+/// Note hooks) is not wired into `serve` yet — gate it with a clear message.
+pub fn ensure_webhook_supported(forge: ForgeKind) -> Result<()> {
+    match forge {
+        ForgeKind::GitHub => Ok(()),
+        ForgeKind::GitLab => bail!(
+            "GREYBEARD_FORGE=gitlab is supported for CLI review, but the webhook service \
+             (serve) does not handle GitLab events yet — see docs/GITLAB.md. Use the CLI \
+             `review` command, or run serve with GREYBEARD_FORGE=github."
+        ),
+    }
+}
+
 /// Fail early and clearly for a forge that has no backend yet. Pure (no IO), so
 /// CLI and serve startup can both gate on it before doing any work — and it's
 /// unit-testable without constructing a client.
 pub fn ensure_supported(forge: ForgeKind) -> Result<()> {
     match forge {
-        ForgeKind::GitHub => Ok(()),
-        ForgeKind::GitLab => bail!(
-            "GREYBEARD_FORGE=gitlab is not implemented yet — the GitLab backend is \
-             specified in docs/GITLAB.md. Set GREYBEARD_FORGE=github (the default) to run."
-        ),
+        ForgeKind::GitHub | ForgeKind::GitLab => Ok(()),
     }
 }
 
 /// Connect to the configured forge with ambient credentials.
-pub async fn connect(cfg: &Config) -> Result<Github> {
+pub async fn connect(cfg: &Config) -> Result<ForgeClient> {
     connect_installation(cfg, None).await
 }
 
 /// Connect for a specific installation/context (GitHub App installation id;
 /// ignored by backends without an app model).
-pub async fn connect_installation(cfg: &Config, installation: Option<u64>) -> Result<Github> {
+pub async fn connect_installation(cfg: &Config, installation: Option<u64>) -> Result<ForgeClient> {
     ensure_supported(cfg.forge)?;
-    Github::for_installation(installation, cfg.forge_base_url.as_deref()).await
+    match cfg.forge {
+        ForgeKind::GitHub => Ok(ForgeClient::GitHub(
+            Github::for_installation(installation, cfg.forge_base_url.as_deref()).await?,
+        )),
+        ForgeKind::GitLab => Ok(ForgeClient::GitLab(
+            crate::gitlab::Gitlab::connect(cfg.forge_base_url.as_deref()).await?,
+        )),
+    }
 }

@@ -2,6 +2,7 @@ pub mod config;
 pub mod events;
 pub mod forge;
 pub mod github;
+pub mod gitlab;
 pub mod metrics;
 pub mod llm;
 pub mod pack;

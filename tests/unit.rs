@@ -110,7 +110,7 @@ fn dedupe_merges_nearby_and_keeps_highest_severity() {
 #[test]
 fn comment_render_no_findings_and_marker() {
     let sha = "0123456789abcdef0123456789abcdef01234567";
-    let body = render_comment(&pr(), sha, &[], &[], 4, 6, 0);
+    let body = render_comment(greybeard::config::Forge::GitHub, None, &pr(), sha, &[], &[], 4, 6, 0);
     assert!(body.contains("No issues found"));
     assert!(body.contains("_You shall pass._"));
     assert!(body.contains("reviewed 0123456"));
@@ -132,7 +132,7 @@ fn comment_render_findings_are_numbered_with_permalinks() {
         lens: "bugs".into(),
         confidence: 95,
     }];
-    let body = render_comment(&pr(), sha, &confirmed, &[], 3, 6, 0);
+    let body = render_comment(greybeard::config::Forge::GitHub, None, &pr(), sha, &confirmed, &[], 3, 6, 0);
     assert!(body.contains("Found 1 issue:"));
     assert!(body.contains(&format!("blob/{sha}/src/x.rs#L6-L8")));
     assert!(body.contains("1 confirmed"));
@@ -147,7 +147,7 @@ fn minor_notes_render_collapsed_with_crack_verdict() {
         lens: "code-comments".into(),
         confidence: 65,
     }];
-    let body = render_comment(&pr(), sha, &[], &minor, 2, 6, 0);
+    let body = render_comment(greybeard::config::Forge::GitHub, None, &pr(), sha, &[], &minor, 2, 6, 0);
     assert!(body.contains("No blocking issues found"));
     assert!(body.contains("<details>"));
     assert!(body.contains("Minor notes (1)"));
@@ -176,7 +176,7 @@ fn minor_colliding_with_confirmed_is_dropped() {
 #[test]
 fn degraded_run_suppresses_verdict_and_warns() {
     let sha = "0123456789abcdef0123456789abcdef01234567";
-    let body = render_comment(&pr(), sha, &[], &[], 5, 6, 3);
+    let body = render_comment(greybeard::config::Forge::GitHub, None, &pr(), sha, &[], &[], 5, 6, 3);
     assert!(body.contains("Verification degraded"));
     assert!(body.contains("3 candidate findings"));
     assert!(!body.contains("You shall pass"), "no verdict line while degraded");
@@ -190,7 +190,7 @@ fn verdict_line_severity_tiers() {
         lens: "bugs".into(),
         confidence: 90,
     }];
-    let body = render_comment(&pr(), sha, &gap_only, &[], 1, 6, 0);
+    let body = render_comment(greybeard::config::Forge::GitHub, None, &pr(), sha, &gap_only, &[], 1, 6, 0);
     assert!(body.contains("_Pass — but mind the cracks in the bridge._"));
     assert!(!body.contains("_You shall not pass._"));
 }
@@ -262,7 +262,7 @@ fn marker_v2_carries_findings_and_stays_parseable() {
         lens: "history".into(),
         confidence: 60 + (i % 20) as u8,
     }).collect();
-    let body = render_comment(&pr(), sha, &confirmed, &minor, 30, 6, 0);
+    let body = render_comment(greybeard::config::Forge::GitHub, None, &pr(), sha, &confirmed, &minor, 30, 6, 0);
 
     // v1-compatible sha extraction still works on a v2 marker.
     assert_eq!(parse_marker(&body), Some(sha.to_string()));
@@ -283,7 +283,7 @@ fn marker_v2_carries_findings_and_stays_parseable() {
 
     // Clean review → verdict pass, empty findings.
     confirmed.clear();
-    let clean = render_comment(&pr(), sha, &confirmed, &[], 0, 6, 0);
+    let clean = render_comment(greybeard::config::Forge::GitHub, None, &pr(), sha, &confirmed, &[], 0, 6, 0);
     let start = clean.find("<!-- greybeard:").unwrap() + "<!-- greybeard:".len();
     let end = clean[start..].find("-->").unwrap() + start;
     let p: serde_json::Value = serde_json::from_str(clean[start..end].trim()).unwrap();
@@ -416,13 +416,69 @@ fn forge_parses_names_and_rejects_unknown() {
 }
 
 #[test]
-fn ensure_supported_gates_unimplemented_gitlab() {
+fn forge_review_supported_but_serve_gated_for_gitlab() {
     use greybeard::config::Forge;
-    use greybeard::forge::ensure_supported;
+    use greybeard::forge::{ensure_supported, ensure_webhook_supported};
+    // CLI review is supported for both forges now.
     assert!(ensure_supported(Forge::GitHub).is_ok());
-    let err = ensure_supported(Forge::GitLab).unwrap_err().to_string();
+    assert!(ensure_supported(Forge::GitLab).is_ok());
+    // The webhook service is still GitHub-only; GitLab serve is gated clearly.
+    assert!(ensure_webhook_supported(Forge::GitHub).is_ok());
+    let err = ensure_webhook_supported(Forge::GitLab).unwrap_err().to_string();
     assert!(err.contains("gitlab"), "error should name the forge: {err}");
     assert!(err.contains("docs/GITLAB.md"), "error should point at the design doc: {err}");
+}
+
+#[test]
+fn gitlab_mr_url_parses_nested_namespace() {
+    use greybeard::gitlab::parse_mr_url;
+    let p = parse_mr_url("https://gitlab.com/group/subgroup/project/-/merge_requests/42").unwrap();
+    assert_eq!((p.owner.as_str(), p.repo.as_str(), p.number), ("group/subgroup", "project", 42));
+    assert_eq!(p.project(), "group/subgroup/project");
+    // Simple two-segment path, trailing slash tolerated.
+    let p2 = parse_mr_url("https://gitlab.com/acme/widgets/-/merge_requests/7/").unwrap();
+    assert_eq!((p2.owner.as_str(), p2.repo.as_str(), p2.number), ("acme", "widgets", 7));
+    // Self-managed host works; a GitHub PR URL and a bare-namespace URL are rejected.
+    assert!(parse_mr_url("https://gitlab.example.com/a/b/-/merge_requests/1").is_ok());
+    assert!(parse_mr_url("https://github.com/o/r/pull/1").is_err());
+    assert!(parse_mr_url("https://gitlab.com/onlyone/-/merge_requests/1").is_err());
+}
+
+#[test]
+fn gitlab_api_endpoints_default_and_self_managed() {
+    use greybeard::gitlab::api_endpoints;
+    assert_eq!(
+        api_endpoints(None),
+        ("https://gitlab.com/api/v4".into(), "https://gitlab.com".into())
+    );
+    assert_eq!(
+        api_endpoints(Some("  https://gitlab.example.com/  ")),
+        ("https://gitlab.example.com/api/v4".into(), "https://gitlab.example.com".into())
+    );
+}
+
+#[test]
+fn gitlab_permalink_uses_dash_blob_and_short_anchor() {
+    use greybeard::config::Forge;
+    use greybeard::gitlab::parse_mr_url;
+    use greybeard::pack::permalink;
+    let pr = parse_mr_url("https://gitlab.com/group/sub/project/-/merge_requests/5").unwrap();
+    let sha = "abcdef0";
+    // GitLab uses the /-/blob/ prefix and an #L41-43 anchor (no second L).
+    let link = permalink(Forge::GitLab, None, &pr, sha, "src/x.rs", Some(42));
+    assert_eq!(link, "https://gitlab.com/group/sub/project/-/blob/abcdef0/src/x.rs#L41-43");
+    // Self-managed base + no line.
+    let link2 = permalink(Forge::GitLab, Some("https://gl.example.com/"), &pr, sha, "f.rs", None);
+    assert_eq!(link2, "https://gl.example.com/group/sub/project/-/blob/abcdef0/f.rs");
+}
+
+#[test]
+fn gitlab_bot_heuristic() {
+    use greybeard::gitlab::looks_like_bot;
+    assert!(looks_like_bot("project_123_bot"));
+    assert!(looks_like_bot("release-bot"));
+    assert!(looks_like_bot("ci_bot"));
+    assert!(!looks_like_bot("alice"));
 }
 
 #[test]

@@ -13,6 +13,11 @@ impl Forge for Github {
         self.auth_mode
     }
 
+    async fn whoami(&self) -> Result<String> {
+        let d = self.graphql("query{viewer{login}}", serde_json::json!({})).await?;
+        Ok(d["viewer"]["login"].as_str().unwrap_or("?").to_string())
+    }
+
     async fn build_pack(&self, pr: &PrRef, cfg: &Config) -> Result<ContextPack> {
         pack::build(self, pr, cfg).await
     }
@@ -61,6 +66,13 @@ pub struct PrRef {
 }
 
 impl PrRef {
+    /// The forge project path: `owner/repo` on GitHub, or the full nested
+    /// namespace path (`group/subgroup/project`) on GitLab, where the fetcher
+    /// packs the leading namespaces into `owner` and the project into `repo`.
+    pub fn project(&self) -> String {
+        format!("{}/{}", self.owner, self.repo)
+    }
+
     pub fn parse(url: &str) -> Result<Self> {
         let trimmed = url.trim_end_matches('/');
         let parts: Vec<&str> = trimmed

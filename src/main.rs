@@ -2,8 +2,7 @@ use anyhow::Result;
 use clap::{Parser, Subcommand};
 
 use greybeard::config::Config;
-use greybeard::forge;
-use greybeard::github::{self, PrRef};
+use greybeard::forge::{self, Forge};
 use greybeard::llm::Llm;
 use greybeard::pipeline::review::{self, ReviewArgs};
 use greybeard::telemetry::Telemetry;
@@ -18,9 +17,10 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
-    /// Review a pull request and post (or update) the Greybeard comment.
+    /// Review a pull/merge request and post (or update) the Greybeard comment.
     Review {
-        /// PR URL, e.g. https://github.com/owner/repo/pull/123
+        /// PR/MR URL — https://github.com/owner/repo/pull/123 or
+        /// https://gitlab.com/group/project/-/merge_requests/123 (GREYBEARD_FORGE).
         pr_url: String,
         /// Print the comment instead of posting it.
         #[arg(long)]
@@ -33,7 +33,7 @@ enum Command {
     Pack {
         pr_url: String,
     },
-    /// Verify GitHub credentials (App or user token) and print the auth mode.
+    /// Verify forge credentials and print the auth mode + identity.
     AuthCheck,
     /// Run the webhook service (GitHub App events -> reviews).
     Serve {
@@ -51,7 +51,7 @@ async fn main() -> Result<()> {
             // Connect first so an unimplemented forge fails with the friendly
             // seam error before the GitHub-specific URL parse.
             let gh = forge::connect(&cfg).await?;
-            let pr = PrRef::parse(&pr_url)?;
+            let pr = forge::parse_ref(&cfg, &pr_url)?;
             let telemetry = Telemetry::new();
             let llm = Llm::new(cfg.clone(), telemetry.clone()).await?;
             review::run(&gh, &llm, &cfg, &telemetry, &pr, &ReviewArgs { dry_run, force })
@@ -65,20 +65,20 @@ async fn main() -> Result<()> {
         Command::AuthCheck => {
             let cfg = Config::from_env()?;
             let gh = forge::connect(&cfg).await?;
-            println!("auth mode: {}", gh.auth_mode);
-            match gh.graphql("query{viewer{login}}", serde_json::json!({})).await {
-                Ok(d) => println!("authenticated as: {}", d["viewer"]["login"].as_str().unwrap_or("?")),
-                // Installation tokens can't resolve `viewer`; the successful
-                // token exchange above already proves the App credentials.
-                Err(e) => println!("viewer query: {e} (normal for app installation tokens)"),
+            println!("auth mode: {}", gh.auth_mode());
+            match gh.whoami().await {
+                Ok(login) => println!("authenticated as: {login}"),
+                // Installation tokens can't resolve an identity; the successful
+                // connect above already proves the credentials.
+                Err(e) => println!("identity query: {e} (normal for app installation tokens)"),
             }
             Ok(())
         }
         Command::Pack { pr_url } => {
             let cfg = Config::from_env()?;
             let gh = forge::connect(&cfg).await?;
-            let pr = PrRef::parse(&pr_url)?;
-            let pack = github::pack::build(&gh, &pr, &cfg).await?;
+            let pr = forge::parse_ref(&cfg, &pr_url)?;
+            let pack = gh.build_pack(&pr, &cfg).await?;
             eprintln!(
                 "pack: {} chars, {} files, fetched in {}ms",
                 pack.rendered.len(),

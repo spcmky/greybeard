@@ -217,6 +217,8 @@ pub async fn run<F: Forge>(
     let confirmed = compose::dedupe(confirmed);
     let minor = compose::dedupe_minor(minor, &confirmed);
     let body = compose::render_comment(
+        cfg.forge,
+        cfg.forge_base_url.as_deref(),
         pr,
         &pack.head_sha,
         &confirmed,
