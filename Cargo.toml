@@ -1,0 +1,33 @@
+[package]
+name = "greybeard"
+version = "1.2.0"
+edition = "2021"
+description = "The mythical senior engineer who's seen every failure mode — PR review service"
+license = "UNLICENSED"
+publish = false
+
+[dependencies]
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "process", "time", "net", "sync", "signal"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "gzip"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+clap = { version = "4", features = ["derive"] }
+anyhow = "1"
+futures = "0.3"
+axum = { version = "0.8", features = ["json"] }
+sha2 = "0.10"
+hmac = "0.12"
+# default-features off: v10 ships both aws-lc-rs and RustCrypto backends and
+# panics at runtime if both are enabled ("exactly one of rust_crypto and
+# aws_lc_rs") — unit tests never touch signing, so only live runs catch it.
+jsonwebtoken = { version = "10", default-features = false, features = ["rust_crypto", "use_pem"] }
+base64 = "0.22"
+aws-config = { version = "1", default-features = false, features = ["behavior-version-latest", "rustls", "rt-tokio"] }
+aws-credential-types = "1"
+aws-sigv4 = "1"
+http = "1"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = true

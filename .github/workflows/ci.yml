@@ -1,0 +1,55 @@
+# Build/test on every PR and master push; image push only from master.
+# Deployment is GitOps: ArgoCD tracks helm/tools/greybeard in your infra repo —
+# to roll out a build, bump image.tag there to this repo's master sha7.
+#
+# Repo vars (from your infra core stack): AWS_ROLE_ARN = the app CI
+# role, ECR_IMAGE = <acct>.dkr.ecr.<region>.amazonaws.com/<org>/greybeard.
+name: ci
+
+on:
+  pull_request:
+  push:
+    branches: [master]
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    # arm64 runner: the EKS node group is Graviton, so test what we ship.
+    runs-on: ubuntu-24.04-arm
+    container: rust:1-bookworm
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/cache@v5
+        with:
+          path: |
+            /usr/local/cargo/registry
+            target
+          key: cargo-${{ runner.arch }}-${{ hashFiles('Cargo.lock') }}
+      - run: cargo test
+      - run: rustup component add clippy && cargo clippy --all-targets -- -D warnings
+
+  build-push:
+    if: github.ref == 'refs/heads/master' && vars.AWS_ROLE_ARN != ''
+    needs: test
+    runs-on: ubuntu-24.04-arm
+    permissions:
+      # Job-scoped on purpose — workflow-level id-token:write is exactly what
+      # Greybeard's own ci-config lens flags.
+      id-token: write
+      contents: read
+    steps:
+      - uses: actions/checkout@v5
+      - uses: aws-actions/configure-aws-credentials@v5
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
+          aws-region: us-east-2
+      - uses: aws-actions/amazon-ecr-login@v2
+      - name: Build and push (immutable sha7 tag — never rebuilt, only promoted)
+        run: |
+          TAG="${GITHUB_SHA::7}"
+          docker build -t "${{ vars.ECR_IMAGE }}:$TAG" .
+          docker push "${{ vars.ECR_IMAGE }}:$TAG"
+          echo "pushed ${{ vars.ECR_IMAGE }}:$TAG"
+
