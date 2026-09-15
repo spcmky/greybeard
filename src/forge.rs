@@ -11,7 +11,7 @@
 //! `Box<dyn Forge>`) covering both — a change in this one place, with the
 //! pipeline untouched.
 
-use anyhow::{bail, Result};
+use anyhow::Result;
 
 use crate::config::{Config, Forge as ForgeKind};
 use crate::github::{Github, PrRef};
@@ -97,19 +97,6 @@ pub fn parse_ref(cfg: &Config, url: &str) -> Result<PrRef> {
     }
 }
 
-/// Whether the configured forge can run the webhook service. GitLab review
-/// works from the CLI, but its webhook parsing (X-Gitlab-Token, Merge Request /
-/// Note hooks) is not wired into `serve` yet — gate it with a clear message.
-pub fn ensure_webhook_supported(forge: ForgeKind) -> Result<()> {
-    match forge {
-        ForgeKind::GitHub => Ok(()),
-        ForgeKind::GitLab => bail!(
-            "GREYBEARD_FORGE=gitlab is supported for CLI review, but the webhook service \
-             (serve) does not handle GitLab events yet — see docs/GITLAB.md. Use the CLI \
-             `review` command, or run serve with GREYBEARD_FORGE=github."
-        ),
-    }
-}
 
 /// Fail early and clearly for a forge that has no backend yet. Pure (no IO), so
 /// CLI and serve startup can both gate on it before doing any work — and it's

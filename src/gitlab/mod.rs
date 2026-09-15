@@ -57,6 +57,23 @@ pub fn parse_mr_url(url: &str) -> Result<PrRef> {
     })
 }
 
+/// Build a [`PrRef`] from a GitLab project path (`group/subgroup/project`) and
+/// an MR iid — the shape webhook payloads carry (`path_with_namespace` and the
+/// `iid`). Leading namespaces go in `owner`, the project in `repo`. None if the
+/// path has fewer than two segments or the iid is 0.
+pub fn pr_from_project_path(path: &str, iid: u64) -> Option<PrRef> {
+    let segs: Vec<&str> = path.split('/').filter(|s| !s.is_empty()).collect();
+    if segs.len() < 2 || iid == 0 {
+        return None;
+    }
+    let (repo, owner) = segs.split_last().unwrap();
+    Some(PrRef {
+        owner: owner.join("/"),
+        repo: (*repo).to_string(),
+        number: iid,
+    })
+}
+
 /// Percent-encode a path segment set for use as a GitLab `:id` / `:file_path`
 /// (encodes `/` as `%2F`, per the REST convention for URL-encoded paths).
 pub fn enc(s: &str) -> String {
