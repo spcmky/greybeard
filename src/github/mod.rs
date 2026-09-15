@@ -4,6 +4,39 @@ pub mod pack;
 use anyhow::{anyhow, bail, Context, Result};
 use serde_json::Value;
 
+use crate::config::Config;
+use crate::forge::Forge;
+use crate::pack::ContextPack;
+
+impl Forge for Github {
+    fn auth_mode(&self) -> &'static str {
+        self.auth_mode
+    }
+
+    async fn build_pack(&self, pr: &PrRef, cfg: &Config) -> Result<ContextPack> {
+        pack::build(self, pr, cfg).await
+    }
+
+    async fn upsert_comment(&self, pack: &ContextPack, body: &str) -> Result<String> {
+        let existing_id = pack.existing_comment.as_ref().map(|(id, _)| id.as_str());
+        comment::upsert(self, &pack.pr_node_id, existing_id, body).await
+    }
+
+    async fn still_open(&self, pr: &PrRef) -> Result<bool> {
+        const QUERY: &str = r#"
+query($owner:String!,$repo:String!,$number:Int!){
+  repository(owner:$owner,name:$repo){ pullRequest(number:$number){ state } }
+}"#;
+        let data = self
+            .graphql(
+                QUERY,
+                serde_json::json!({"owner": pr.owner, "repo": pr.repo, "number": pr.number}),
+            )
+            .await?;
+        Ok(data["repository"]["pullRequest"]["state"] == "OPEN")
+    }
+}
+
 /// Resolve REST + GraphQL base URLs from an optional forge base
 /// (GREYBEARD_FORGE_URL). `None` targets public github.com; `Some(host)` is a
 /// GitHub Enterprise root (e.g. https://ghe.example.com), where REST lives

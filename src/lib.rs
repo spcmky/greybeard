@@ -4,6 +4,7 @@ pub mod forge;
 pub mod github;
 pub mod metrics;
 pub mod llm;
+pub mod pack;
 pub mod pipeline;
 pub mod prompts;
 pub mod server;
