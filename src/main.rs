@@ -48,8 +48,10 @@ async fn main() -> Result<()> {
     match cli.command {
         Command::Review { pr_url, dry_run, force } => {
             let cfg = Config::from_env()?;
-            let pr = PrRef::parse(&pr_url)?;
+            // Connect first so an unimplemented forge fails with the friendly
+            // seam error before the GitHub-specific URL parse.
             let gh = forge::connect(&cfg).await?;
+            let pr = PrRef::parse(&pr_url)?;
             let telemetry = Telemetry::new();
             let llm = Llm::new(cfg.clone(), telemetry.clone()).await?;
             review::run(&gh, &llm, &cfg, &telemetry, &pr, &ReviewArgs { dry_run, force })
@@ -74,8 +76,8 @@ async fn main() -> Result<()> {
         }
         Command::Pack { pr_url } => {
             let cfg = Config::from_env()?;
-            let pr = PrRef::parse(&pr_url)?;
             let gh = forge::connect(&cfg).await?;
+            let pr = PrRef::parse(&pr_url)?;
             let pack = github::pack::build(&gh, &pr, &cfg).await?;
             eprintln!(
                 "pack: {} chars, {} files, fetched in {}ms",

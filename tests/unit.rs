@@ -414,3 +414,29 @@ fn forge_parses_names_and_rejects_unknown() {
     assert_eq!(Forge::parse(" GL ").unwrap(), Forge::GitLab);
     assert!(Forge::parse("bitbucket").is_err());
 }
+
+#[test]
+fn ensure_supported_gates_unimplemented_gitlab() {
+    use greybeard::config::Forge;
+    use greybeard::forge::ensure_supported;
+    assert!(ensure_supported(Forge::GitHub).is_ok());
+    let err = ensure_supported(Forge::GitLab).unwrap_err().to_string();
+    assert!(err.contains("gitlab"), "error should name the forge: {err}");
+    assert!(err.contains("docs/GITLAB.md"), "error should point at the design doc: {err}");
+}
+
+#[test]
+fn github_api_endpoints_default_and_enterprise() {
+    use greybeard::github::api_endpoints;
+    // Public github.com — REST and GraphQL share the host.
+    assert_eq!(
+        api_endpoints(None),
+        ("https://api.github.com".into(), "https://api.github.com/graphql".into())
+    );
+    // GitHub Enterprise root — REST under /api/v3, GraphQL under /api/graphql;
+    // trailing slash and surrounding whitespace are normalized away.
+    assert_eq!(
+        api_endpoints(Some("  https://ghe.example.com/  ")),
+        ("https://ghe.example.com/api/v3".into(), "https://ghe.example.com/api/graphql".into())
+    );
+}

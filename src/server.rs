@@ -53,6 +53,8 @@ struct ServerState {
 }
 
 pub async fn serve(cfg: Config, port: u16) -> Result<()> {
+    // Fail at startup, not per-webhook, if the configured forge has no backend.
+    forge::ensure_supported(cfg.forge)?;
     let webhook_secret = std::env::var("GREYBEARD_WEBHOOK_SECRET")
         .context("GREYBEARD_WEBHOOK_SECRET is required for serve mode")?;
     // Used to ignore our own comments on the issue_comment command channel.

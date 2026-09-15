@@ -145,7 +145,7 @@ impl Config {
         };
         let forge_base_url = std::env::var("GREYBEARD_FORGE_URL")
             .ok()
-            .map(|u| u.trim_end_matches('/').to_string())
+            .map(|u| u.trim().trim_end_matches('/').to_string())
             .filter(|u| !u.is_empty());
 
         Ok(Self {
