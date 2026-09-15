@@ -1,3 +1,4 @@
+use crate::config::Forge;
 use crate::github::{comment, PrRef};
 use crate::pipeline::{severity_rank, Confirmed};
 
@@ -73,7 +74,12 @@ const MAX_MARKER_CLAIM_CHARS: usize = 200;
 const FEEDBACK_URL: &str = "https://github.com/REI-Labs/greybeard/issues";
 
 /// Render the single Greybeard PR comment (created once, updated in place).
+/// `forge`/`base_url` pick the permalink shape (GitHub blob vs GitLab `/-/blob`,
+/// and the self-managed web root).
+#[allow(clippy::too_many_arguments)]
 pub fn render_comment(
+    forge: Forge,
+    base_url: Option<&str>,
     pr: &PrRef,
     head_sha: &str,
     confirmed: &[Confirmed],
@@ -105,7 +111,7 @@ pub fn render_comment(
                 c.finding.severity,
                 c.finding.claim.trim_end_matches('.'),
                 c.finding.evidence.replace('\n', " "),
-                comment::permalink(pr, head_sha, &c.finding.file, c.finding.line),
+                crate::pack::permalink(forge, base_url, pr, head_sha, &c.finding.file, c.finding.line),
             ));
         }
     }
@@ -126,7 +132,7 @@ pub fn render_comment(
                     Some(l) => format!("{}:{}", c.finding.file, l),
                     None => c.finding.file.clone(),
                 },
-                comment::permalink(pr, head_sha, &c.finding.file, c.finding.line),
+                crate::pack::permalink(forge, base_url, pr, head_sha, &c.finding.file, c.finding.line),
             ));
         }
         if minor.len() > MAX_MINOR_SHOWN {

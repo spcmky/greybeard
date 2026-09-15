@@ -46,19 +46,10 @@ pub fn render_marker_v2(sha: &str, verdict: &str, findings: Vec<Value>) -> Strin
     format!("{MARKER_PREFIX}{payload} -->")
 }
 
-/// GitHub permalink with full SHA and >=1 line of context either side.
+/// GitHub permalink with full SHA and >=1 line of context either side. Thin
+/// wrapper over the forge-neutral [`crate::pack::permalink`] pinned to GitHub.
 pub fn permalink(pr: &PrRef, sha: &str, path: &str, line: Option<u32>) -> String {
-    match line {
-        Some(l) => {
-            let start = l.saturating_sub(1).max(1);
-            let end = l + 1;
-            format!(
-                "https://github.com/{}/{}/blob/{}/{}#L{}-L{}",
-                pr.owner, pr.repo, sha, path, start, end
-            )
-        }
-        None => format!("https://github.com/{}/{}/blob/{}/{}", pr.owner, pr.repo, sha, path),
-    }
+    crate::pack::permalink(crate::config::Forge::GitHub, None, pr, sha, path, line)
 }
 
 /// Create the Greybeard comment, or update the existing one in place — via

@@ -202,9 +202,22 @@ full path either way.
    methods stay deferred to phase 3 (`PrRef` and `ContextPack.pr_node_id` carry
    through unchanged for now). Pure refactor — all 24 tests stay green, clippy
    clean under `-D warnings`.
-3. **GitLab backend.** `src/gitlab/` implementing the trait: REST v4 client,
-   MR pack fetch, notes upsert, `PRIVATE-TOKEN` auth, `X-Gitlab-Token` +
-   `Merge Request Hook` / `Note Hook` webhook, MR-URL parsing.
+3. **GitLab backend — CLI review (done).** `src/gitlab/` implements the trait:
+   REST v4 client with `PRIVATE-TOKEN` auth (`Gitlab::connect`), MR-URL parsing
+   (nested namespaces + `/-/`, packed into `PrRef`), the pack fetcher
+   (`gitlab/pack.rs`: MR metadata, paginated `/diffs` reassembled into a
+   GitHub-style unified diff, file contents via the raw files API, CLAUDE.md,
+   and a `CheckRollup` from the MR head pipeline + jobs), and notes upsert
+   (create/`PUT`, keyed off the marker). `connect*` now returns a `ForgeClient`
+   dispatch enum; permalinks are forge-aware (`/-/blob/`, `#L10-11`). `whoami`
+   added to the trait for `auth-check`. **v1 gaps** (tracked, not blockers):
+   blame and prior-review-comment sections are not fetched yet (rendered
+   empty); bot-author detection is a username heuristic (`looks_like_bot`).
+3b. **GitLab serve mode (todo).** `X-Gitlab-Token` verify (plain constant-time
+    compare, no HMAC), `Merge Request Hook` / `Note Hook` parsing, and
+    `X-Gitlab-Event-UUID` dedupe — wired into `server.rs`. Until then,
+    `serve` is gated for GitLab (`ensure_webhook_supported`); CLI `review`
+    works.
 4. **Docs + verify.** GitLab setup section in `docs/SETUP.md`; verify against a
    real GitLab test project (CLI dry-run, then a live MR webhook).
 

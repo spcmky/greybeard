@@ -11,8 +11,50 @@
 use std::collections::BTreeSet;
 use std::time::Instant;
 
-use crate::config::Config;
+use crate::config::{Config, Forge};
 use crate::github::PrRef;
+
+/// Web permalink to a file (optionally a line window) at a sha, in the shape
+/// the forge's blob viewer expects. GitHub: `<host>/<project>/blob/<sha>/<path>`
+/// with an `#L10-L11` anchor; GitLab: the `/-/blob/` prefix and an `#L10-11`
+/// anchor (no second `L`). `base_url` is the forge web root
+/// (`GREYBEARD_FORGE_URL`) for self-managed GitLab; GitHub always links to
+/// public github.com today (GitHub Enterprise web links are a separate concern).
+pub fn permalink(
+    forge: Forge,
+    base_url: Option<&str>,
+    pr: &PrRef,
+    sha: &str,
+    path: &str,
+    line: Option<u32>,
+) -> String {
+    let project = pr.project();
+    let trim = |b: &str| b.trim().trim_end_matches('/').to_string();
+    match forge {
+        Forge::GitHub => match line {
+            Some(l) => {
+                let start = l.saturating_sub(1).max(1);
+                let end = l + 1;
+                format!("https://github.com/{project}/blob/{sha}/{path}#L{start}-L{end}")
+            }
+            None => format!("https://github.com/{project}/blob/{sha}/{path}"),
+        },
+        Forge::GitLab => {
+            let base = base_url
+                .map(trim)
+                .filter(|h| !h.is_empty())
+                .unwrap_or_else(|| "https://gitlab.com".to_string());
+            match line {
+                Some(l) => {
+                    let start = l.saturating_sub(1).max(1);
+                    let end = l + 1;
+                    format!("{base}/{project}/-/blob/{sha}/{path}#L{start}-{end}")
+                }
+                None => format!("{base}/{project}/-/blob/{sha}/{path}"),
+            }
+        }
+    }
+}
 
 /// One changed file in the PR.
 #[derive(Debug, Clone)]
