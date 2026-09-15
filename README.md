@@ -2,6 +2,11 @@
 
 <img src="assets/avatar.png" alt="Greybeard" width="120" align="right" />
 
+[![CI](https://github.com/spcmky/greybeard/actions/workflows/ci.yml/badge.svg)](https://github.com/spcmky/greybeard/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/github/v/release/spcmky/greybeard)](https://github.com/spcmky/greybeard/releases/latest)
+[![License: MIT](https://img.shields.io/github/license/spcmky/greybeard)](LICENSE)
+[![Built with Rust](https://img.shields.io/badge/built%20with-Rust-orange?logo=rust)](https://www.rust-lang.org)
+
 The mythical senior engineer who's seen every failure mode.
 
 Greybeard is a PR-review service: six specialist review lenses run in parallel over a
@@ -43,6 +48,37 @@ greybeard pack   https://github.com/OWNER/REPO/pull/N     # print the pack, no m
 
 `--dry-run` prints the comment instead of posting. `--force` reviews even if the PR
 is closed / draft / already reviewed at this SHA / judged trivial.
+
+### Examples
+
+```sh
+# Preview a review without posting — a safe first run, prints the comment to stdout
+ANTHROPIC_API_KEY=sk-ant-... \
+  greybeard review https://github.com/acme/api/pull/482 --dry-run
+
+# Post it for real (re-running updates the same comment in place, never a second one)
+greybeard review https://github.com/acme/api/pull/482
+
+# Re-review a PR that's closed / already reviewed at this SHA / judged trivial
+greybeard review https://github.com/acme/api/pull/482 --force
+
+# See exactly what the model sees — no API calls, no cost
+greybeard pack https://github.com/acme/api/pull/482 | less
+
+# Check how you're authenticated (user token vs GitHub App bot)
+greybeard auth-check
+
+# Use Amazon Bedrock instead of the Anthropic API
+GREYBEARD_PROVIDER=bedrock \
+GREYBEARD_LENS_MODEL=us.anthropic.claude-opus-5 \
+  greybeard review https://github.com/acme/api/pull/482 --dry-run
+
+# No local toolchain? Run it straight from the Docker image
+docker run --rm -e ANTHROPIC_API_KEY -e GITHUB_TOKEN=$(gh auth token) \
+  greybeard:local review https://github.com/acme/api/pull/482 --dry-run
+```
+
+In [service mode](#service-mode), comment `@greybeard-bot review` on any PR to force a re-review.
 
 ### Service mode
 
