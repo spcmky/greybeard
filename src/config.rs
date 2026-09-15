@@ -6,8 +6,33 @@ pub enum Provider {
     Bedrock,
 }
 
+/// The code-host ("forge") a review runs against. GitHub is the only backend
+/// implemented today; GitLab is specified in docs/GITLAB.md and dispatched
+/// from src/forge.rs. This exists so config, docs, and the connect seam are
+/// forge-neutral ahead of that backend landing.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum Forge {
+    GitHub,
+    GitLab,
+}
+
+impl Forge {
+    pub fn parse(s: &str) -> Result<Self> {
+        match s.trim().to_ascii_lowercase().as_str() {
+            "github" | "gh" => Ok(Forge::GitHub),
+            "gitlab" | "gl" => Ok(Forge::GitLab),
+            other => bail!("GREYBEARD_FORGE must be 'github' or 'gitlab', got '{other}'"),
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct Config {
+    /// Which code host to review against (default GitHub).
+    pub forge: Forge,
+    /// Base URL for a self-hosted forge (GitHub Enterprise / self-managed
+    /// GitLab), no trailing slash. None uses the forge's public API host.
+    pub forge_base_url: Option<String>,
     pub provider: Provider,
     /// Strong model for the review lenses.
     pub lens_model: String,
@@ -114,7 +139,18 @@ impl Config {
         let verify_model =
             std::env::var("GREYBEARD_VERIFY_MODEL").unwrap_or_else(|_| lens_model.clone());
 
+        let forge = match std::env::var("GREYBEARD_FORGE") {
+            Ok(v) if !v.is_empty() => Forge::parse(&v)?,
+            _ => Forge::GitHub,
+        };
+        let forge_base_url = std::env::var("GREYBEARD_FORGE_URL")
+            .ok()
+            .map(|u| u.trim().trim_end_matches('/').to_string())
+            .filter(|u| !u.is_empty());
+
         Ok(Self {
+            forge,
+            forge_base_url,
             provider,
             lens_model,
             verify_model,

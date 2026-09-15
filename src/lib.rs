@@ -1,5 +1,6 @@
 pub mod config;
 pub mod events;
+pub mod forge;
 pub mod github;
 pub mod metrics;
 pub mod llm;

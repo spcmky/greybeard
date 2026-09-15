@@ -240,12 +240,15 @@ Confirm with `greybeard auth-check` — it prints `auth mode: app` when the App 
 
 | Var | Meaning | Default |
 | --- | --- | --- |
+| `GREYBEARD_FORGE` | code host: `github` or `gitlab` | `github` (GitLab is [in design](GITLAB.md), not yet implemented) |
+| `GREYBEARD_TOKEN` | forge access token (`GITHUB_TOKEN` / `GH_TOKEN` still accepted) | falls back to `gh auth token` |
+| `GREYBEARD_FORGE_URL` | base URL for a self-hosted forge (GH Enterprise / self-managed GitLab) | the forge's public host |
 | `GREYBEARD_PROVIDER` | `anthropic` or `bedrock` | `anthropic` if `ANTHROPIC_API_KEY` set, else `bedrock` |
 | `ANTHROPIC_API_KEY` | Anthropic API key (provider=anthropic) | — |
 | `GREYBEARD_LENS_MODEL` | strong model for the 6 lenses | `claude-opus-5` (anthropic); **required** for bedrock, e.g. `us.anthropic.claude-opus-5` |
 | `GREYBEARD_VERIFY_MODEL` | model for eligibility + per-finding verification (runs at low effort) | the lens model — a weak verifier suppresses real findings |
 | `AWS_REGION` / `AWS_DEFAULT_REGION` | Bedrock region | `us-east-2` |
-| `GITHUB_TOKEN` / `GH_TOKEN` | GitHub user token | falls back to `gh auth token` |
+| `GITHUB_TOKEN` / `GH_TOKEN` | GitHub token — alias for `GREYBEARD_TOKEN` | falls back to `gh auth token` |
 | `GREYBEARD_APP_ID` + `GREYBEARD_APP_PRIVATE_KEY` (pem path) + `GREYBEARD_APP_INSTALLATION_ID` | GitHub App identity — when set it takes precedence and comments post as the app bot; in serve mode the webhook payload's installation ID overrides the env pin | unset (user token) |
 | `GREYBEARD_WEBHOOK_SECRET` | HMAC secret for webhook verification — **required for `serve`** | — |
 | `GREYBEARD_BOT_LOGIN` | the bot's login, for @-mention matching and self-comment filtering | `greybeard-bot[bot]` |
