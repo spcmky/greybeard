@@ -1,15 +1,15 @@
-# Build/test on every PR and master push; image push only from master.
-# Deployment is GitOps: ArgoCD tracks helm/tools/greybeard in your infra repo —
-# to roll out a build, bump image.tag there to this repo's master sha7.
+# Disabled: runs only on manual dispatch. There is no deploy target wired up.
+# To re-enable automatic CI, restore the pull_request / push triggers below.
 #
-# Repo vars (from your infra core stack): AWS_ROLE_ARN = the app CI
-# role, ECR_IMAGE = <acct>.dkr.ecr.<region>.amazonaws.com/<org>/greybeard.
+# When wired to infra: deployment is GitOps: ArgoCD tracks
+# helm/tools/greybeard in your infra repo — to roll out a build, bump
+# image.tag there to this repo's main sha7. Repo vars (from your infra core
+# stack): AWS_ROLE_ARN = the app CI role,
+# ECR_IMAGE = <acct>.dkr.ecr.<region>.amazonaws.com/<org>/greybeard.
 name: ci
 
 on:
-  pull_request:
-  push:
-    branches: [master]
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -31,7 +31,7 @@ jobs:
       - run: rustup component add clippy && cargo clippy --all-targets -- -D warnings
 
   build-push:
-    if: github.ref == 'refs/heads/master' && vars.AWS_ROLE_ARN != ''
+    if: github.ref == 'refs/heads/main' && vars.AWS_ROLE_ARN != ''
     needs: test
     runs-on: ubuntu-24.04-arm
     permissions:
