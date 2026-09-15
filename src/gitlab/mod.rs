@@ -14,6 +14,7 @@ use serde_json::{json, Value};
 
 use crate::config::Config;
 use crate::forge::Forge;
+use crate::github::comment::parse_marker;
 use crate::github::PrRef;
 use crate::pack::ContextPack;
 
@@ -33,7 +34,12 @@ pub fn api_endpoints(base: Option<&str>) -> (String, String) {
 /// namespaces go in `owner` and the project in `repo`, so `PrRef::project()`
 /// rebuilds the full path (`group/subgroup/project`).
 pub fn parse_mr_url(url: &str) -> Result<PrRef> {
-    let trimmed = url.trim().trim_end_matches('/');
+    // Drop any query string / fragment first: neither is part of the project
+    // path or the iid, and a namespace segment can never contain '?' or '#'.
+    // Without this a copied link like `.../merge_requests/5?tab=diffs` or
+    // `.../5#note_1` would fail the iid parse below.
+    let path_only = url.split(['?', '#']).next().unwrap_or(url);
+    let trimmed = path_only.trim().trim_end_matches('/');
     let no_scheme = trimmed
         .trim_start_matches("https://")
         .trim_start_matches("http://");
@@ -75,12 +81,16 @@ pub fn enc(s: &str) -> String {
 /// convention. Conservative: only usernames that clearly read as bots.
 pub fn looks_like_bot(username: &str) -> bool {
     let u = username.to_ascii_lowercase();
-    u.ends_with("-bot")
-        || u.ends_with("_bot")
-        || u.ends_with("bot")
-        || u.contains("service-account")
-        || u.starts_with("project_")
-        || u.starts_with("group_")
+    // Separator-delimited bot suffix convention — `-bot` / `_bot` / `.bot`.
+    // A separator is required so real names ending in "bot" (robot, talbot)
+    // don't match.
+    let suffix_bot = u.ends_with("-bot") || u.ends_with("_bot") || u.ends_with(".bot");
+    // GitLab project/group access tokens author as `project_<id>_bot_<hash>` /
+    // `group_<id>_bot_<hash>` — the `_bot` segment is what makes them a bot,
+    // not the prefix alone (a human could own a `project_planning` account).
+    let token_user =
+        (u.starts_with("project_") || u.starts_with("group_")) && u.contains("_bot");
+    suffix_bot || token_user || u.contains("service-account")
 }
 
 /// Thin GitLab REST v4 client.
@@ -194,6 +204,52 @@ impl Gitlab {
     /// The URL-encoded project id for `pr` (`group%2Fsubgroup%2Fproject`).
     pub fn project_id(pr: &PrRef) -> String {
         enc(&pr.project())
+    }
+
+    /// Find greybeard's existing note by its marker, returning
+    /// `(note id, reviewed sha)`. Pages the MR notes newest-edited first and
+    /// stops at the first match, so an MR with many system notes (label
+    /// changes, commits, mentions) doesn't cost a full listing every review.
+    /// Any error mid-scan degrades to `None` — treated as "no existing note".
+    pub async fn find_marker_note(&self, pr: &PrRef) -> Option<(String, String)> {
+        let pid = Self::project_id(pr);
+        let iid = pr.number;
+        let mut page: u32 = 1;
+        loop {
+            // Greybeard edits its note in place, so ordering by `updated_at`
+            // desc surfaces it early even though it was created on the first
+            // review; correctness doesn't depend on the order (we page until a
+            // match or the notes run out), only the common-case cost does.
+            let url = format!(
+                "/projects/{pid}/merge_requests/{iid}/notes\
+                 ?per_page=100&page={page}&order_by=updated_at&sort=desc"
+            );
+            let r = self.request(reqwest::Method::GET, &url).send().await.ok()?;
+            let next = r
+                .headers()
+                .get("x-next-page")
+                .and_then(|v| v.to_str().ok())
+                .map(|s| s.trim().to_string())
+                .unwrap_or_default();
+            if !r.status().is_success() {
+                return None;
+            }
+            let v: Value = r.json().await.ok()?;
+            if let Some(arr) = v.as_array() {
+                for n in arr {
+                    if let Some(sha) = parse_marker(n["body"].as_str().unwrap_or("")) {
+                        return Some((n["id"].as_u64().unwrap_or(0).to_string(), sha));
+                    }
+                }
+            }
+            match next.parse::<u32>() {
+                Ok(p) if p > page => page = p,
+                _ => return None,
+            }
+            if page > 200 {
+                return None;
+            }
+        }
     }
 
     /// Fetch a file's contents at a ref. None for 404 / non-file.

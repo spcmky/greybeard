@@ -10,7 +10,6 @@ use futures::future::join_all;
 
 use super::Gitlab;
 use crate::config::Config;
-use crate::github::comment::parse_marker;
 use crate::github::PrRef;
 use crate::pack::{cap_lines, claude_md_candidates, parse_diff_ranges, ChangedFile, CheckRollup, ContextPack, PackData};
 
@@ -46,14 +45,7 @@ pub async fn build(gl: &Gitlab, pr: &PrRef, cfg: &Config) -> Result<ContextPack>
     };
 
     // ── Existing greybeard note (marker) ───────────────────────────────────
-    let notes = gl
-        .get_paginated(&format!("/projects/{pid}/merge_requests/{iid}/notes"))
-        .await
-        .unwrap_or_default();
-    let existing_comment = notes.iter().find_map(|n| {
-        let body = n["body"].as_str().unwrap_or("");
-        parse_marker(body).map(|sha| (n["id"].as_u64().unwrap_or(0).to_string(), sha))
-    });
+    let existing_comment = gl.find_marker_note(pr).await;
 
     // ── Diffs (paginated) → changed files + a GitHub-style unified diff ─────
     let diff_items = gl

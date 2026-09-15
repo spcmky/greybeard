@@ -442,6 +442,13 @@ fn gitlab_mr_url_parses_nested_namespace() {
     assert!(parse_mr_url("https://gitlab.example.com/a/b/-/merge_requests/1").is_ok());
     assert!(parse_mr_url("https://github.com/o/r/pull/1").is_err());
     assert!(parse_mr_url("https://gitlab.com/onlyone/-/merge_requests/1").is_err());
+    // Trailing query string, fragment, and the /diffs sub-path all resolve to
+    // the same iid (copied/notification links carry these).
+    for suffix in ["?tab=diffs", "#note_42", "/diffs", "/pipelines?ref=x"] {
+        let p = parse_mr_url(&format!("https://gitlab.com/acme/widgets/-/merge_requests/7{suffix}"))
+            .unwrap_or_else(|e| panic!("suffix {suffix:?}: {e}"));
+        assert_eq!((p.owner.as_str(), p.repo.as_str(), p.number), ("acme", "widgets", 7));
+    }
 }
 
 #[test]
@@ -475,10 +482,19 @@ fn gitlab_permalink_uses_dash_blob_and_short_anchor() {
 #[test]
 fn gitlab_bot_heuristic() {
     use greybeard::gitlab::looks_like_bot;
-    assert!(looks_like_bot("project_123_bot"));
+    // Real bot conventions match.
+    assert!(looks_like_bot("project_123_bot_abc"));
+    assert!(looks_like_bot("group_9_bot_xyz"));
     assert!(looks_like_bot("release-bot"));
     assert!(looks_like_bot("ci_bot"));
+    assert!(looks_like_bot("deploy.bot"));
+    assert!(looks_like_bot("greybeard-service-account"));
+    // Humans (incl. names that merely end in "bot", and a human-owned
+    // project_* account without a _bot segment) are not misclassified.
     assert!(!looks_like_bot("alice"));
+    assert!(!looks_like_bot("robot"));
+    assert!(!looks_like_bot("talbot"));
+    assert!(!looks_like_bot("project_planning"));
 }
 
 #[test]
