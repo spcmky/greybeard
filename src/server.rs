@@ -18,6 +18,7 @@ use crate::llm::Llm;
 use crate::metrics::METRICS;
 use crate::pipeline::review::{self, ReviewArgs, RunSummary};
 use crate::telemetry::Telemetry;
+use crate::webhook;
 
 /// How long a PR gets to settle after an event before its review starts —
 /// rapid pushes collapse into one run (the newest event wins).
@@ -53,9 +54,9 @@ struct ServerState {
 }
 
 pub async fn serve(cfg: Config, port: u16) -> Result<()> {
-    // Fail at startup: the webhook service is GitHub-only for now (GitLab review
-    // works from the CLI, but Merge Request / Note hooks aren't parsed here yet).
-    forge::ensure_webhook_supported(cfg.forge)?;
+    // Fail at startup, not per-webhook, if the configured forge has no backend.
+    forge::ensure_supported(cfg.forge)?;
+    // The webhook secret: GitHub's HMAC key, or GitLab's plain X-Gitlab-Token.
     let webhook_secret = std::env::var("GREYBEARD_WEBHOOK_SECRET")
         .context("GREYBEARD_WEBHOOK_SECRET is required for serve mode")?;
     // Used to ignore our own comments on the issue_comment command channel.
@@ -115,22 +116,14 @@ async fn webhook(
     headers: HeaderMap,
     body: Bytes,
 ) -> (StatusCode, &'static str) {
-    let Some(signature) = headers.get("x-hub-signature-256").and_then(|v| v.to_str().ok()) else {
-        return (StatusCode::UNAUTHORIZED, "missing signature");
-    };
-    if !verify_signature(&st.webhook_secret, &body, signature) {
+    let forge = st.cfg.forge;
+    if !webhook::verify(forge, &st.webhook_secret, &headers, &body) {
         return (StatusCode::UNAUTHORIZED, "bad signature");
     }
-    let event = headers
-        .get("x-github-event")
-        .and_then(|v| v.to_str().ok())
-        .unwrap_or("");
-    let delivery = headers
-        .get("x-github-delivery")
-        .and_then(|v| v.to_str().ok())
-        .unwrap_or("")
-        .to_string();
-    {
+    // Redelivery dedupe (GitHub retries on timeout; GitLab on failure). An
+    // absent id is not deduped — an empty key would collapse unrelated events.
+    let delivery = webhook::delivery_id(forge, &headers);
+    if !delivery.is_empty() {
         let mut seen = st.seen_deliveries.lock().unwrap();
         if seen.contains(&delivery) {
             return (StatusCode::ACCEPTED, "duplicate delivery");
@@ -145,65 +138,27 @@ async fn webhook(
         return (StatusCode::BAD_REQUEST, "bad json");
     };
 
-    match event {
-        "ping" => (StatusCode::OK, "pong"),
-        "pull_request" => {
-            let action = v["action"].as_str().unwrap_or("");
-            let relevant = matches!(action, "opened" | "synchronize" | "ready_for_review" | "reopened");
-            if !relevant {
-                return (StatusCode::ACCEPTED, "ignored action");
-            }
-            // Drafts wait for ready_for_review (eligibility would skip anyway).
-            if v["pull_request"]["draft"].as_bool().unwrap_or(false) {
-                return (StatusCode::ACCEPTED, "draft — waiting for ready_for_review");
-            }
-            let Some(pr) = pr_from_payload(&v) else {
-                return (StatusCode::BAD_REQUEST, "no PR coordinates");
-            };
-            schedule(&st, pr, action, false, installation_from_payload(&v));
-            (StatusCode::ACCEPTED, "queued")
-        }
-        "issue_comment" => {
-            // Command channel: "@greybeard-bot review" on a PR forces a re-review.
-            let is_pr = v["issue"]["pull_request"].is_object();
-            let created = v["action"] == "created";
-            let body_text = v["comment"]["body"].as_str().unwrap_or("").trim();
-            let sender = v["comment"]["user"]["login"].as_str().unwrap_or("");
-            let mention = format!("@{}", st.bot_login.trim_end_matches("[bot]"));
-            if created
-                && is_pr
-                && sender != st.bot_login
-                && body_text.starts_with(&mention)
-                && body_text.contains("review")
-            {
-                // Per-user cooldown — the mention channel is a spend lever.
-                {
-                    let mut last = st.mention_last.lock().unwrap();
-                    if let Some(t) = last.get(sender) {
-                        if t.elapsed() < Duration::from_secs(st.cfg.mention_cooldown_secs) {
-                            return (StatusCode::ACCEPTED, "rate limited — try again later");
-                        }
-                    }
-                    last.insert(sender.to_string(), Instant::now());
-                }
-                let repo_full = v["repository"]["full_name"].as_str().unwrap_or("");
-                let number = v["issue"]["number"].as_u64().unwrap_or(0);
-                let mut parts = repo_full.split('/');
-                if let (Some(owner), Some(repo)) = (parts.next(), parts.next()) {
-                    if number > 0 {
-                        let pr = PrRef {
-                            owner: owner.to_string(),
-                            repo: repo.to_string(),
-                            number,
-                        };
-                        schedule(&st, pr, "command", true, installation_from_payload(&v));
-                        return (StatusCode::ACCEPTED, "queued (forced)");
+    match webhook::parse(forge, &st.bot_login, &headers, &v) {
+        webhook::Verdict::Ping => (StatusCode::OK, "pong"),
+        webhook::Verdict::Ignore(reason) => (StatusCode::ACCEPTED, reason),
+        webhook::Verdict::Review(t) => {
+            // The mention command channel is a spend lever — per-user cooldown.
+            if t.force {
+                let mut last = st.mention_last.lock().unwrap();
+                if let Some(prev) = last.get(&t.sender) {
+                    if prev.elapsed() < Duration::from_secs(st.cfg.mention_cooldown_secs) {
+                        return (StatusCode::ACCEPTED, "rate limited — try again later");
                     }
                 }
+                last.insert(t.sender.clone(), Instant::now());
+                drop(last);
+                schedule(&st, t.pr, &t.action, t.force, t.installation);
+                (StatusCode::ACCEPTED, "queued (forced)")
+            } else {
+                schedule(&st, t.pr, &t.action, t.force, t.installation);
+                (StatusCode::ACCEPTED, "queued")
             }
-            (StatusCode::ACCEPTED, "ignored comment")
         }
-        _ => (StatusCode::ACCEPTED, "ignored event"),
     }
 }
 
@@ -211,14 +166,6 @@ async fn webhook(
 /// second installation (another org) works without a config change.
 pub fn installation_from_payload(v: &Value) -> Option<u64> {
     v["installation"]["id"].as_u64()
-}
-
-fn pr_from_payload(v: &Value) -> Option<PrRef> {
-    Some(PrRef {
-        owner: v["repository"]["owner"]["login"].as_str()?.to_string(),
-        repo: v["repository"]["name"].as_str()?.to_string(),
-        number: v["pull_request"]["number"].as_u64()?,
-    })
 }
 
 /// Debounced, per-PR-exclusive scheduling: a newer event for the same PR

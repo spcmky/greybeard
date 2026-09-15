@@ -35,7 +35,7 @@ enum Command {
     },
     /// Verify forge credentials and print the auth mode + identity.
     AuthCheck,
-    /// Run the webhook service (GitHub App events -> reviews).
+    /// Run the webhook service (GitHub or GitLab events -> reviews).
     Serve {
         #[arg(long, default_value_t = 8080)]
         port: u16,

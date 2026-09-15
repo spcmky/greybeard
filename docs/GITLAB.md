@@ -213,11 +213,15 @@ full path either way.
    added to the trait for `auth-check`. **v1 gaps** (tracked, not blockers):
    blame and prior-review-comment sections are not fetched yet (rendered
    empty); bot-author detection is a username heuristic (`looks_like_bot`).
-3b. **GitLab serve mode (todo).** `X-Gitlab-Token` verify (plain constant-time
-    compare, no HMAC), `Merge Request Hook` / `Note Hook` parsing, and
-    `X-Gitlab-Event-UUID` dedupe — wired into `server.rs`. Until then,
-    `serve` is gated for GitLab (`ensure_webhook_supported`); CLI `review`
-    works.
+3b. **GitLab serve mode (done).** A forge-neutral webhook layer (`src/webhook.rs`)
+    handles both forges: `X-Gitlab-Token` verify (plain constant-time compare,
+    no HMAC) vs GitHub HMAC; `Merge Request Hook` / `Note Hook` parsing
+    (`update` triggers only with an `oldrev`, i.e. a real push, not label
+    edits; `draft` skipped; `@bot review` note forces a re-review) vs GitHub's
+    pull_request/issue_comment; and `X-Gitlab-Event-UUID` vs
+    `X-GitHub-Delivery` dedupe. The debounce / circuit-breaker / inflight
+    machinery in `server.rs` was already forge-agnostic and is unchanged. The
+    GitLab serve gate is gone — `serve` supports both forges.
 4. **Docs + verify.** GitLab setup section in `docs/SETUP.md`; verify against a
    real GitLab test project (CLI dry-run, then a live MR webhook).
 

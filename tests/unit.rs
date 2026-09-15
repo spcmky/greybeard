@@ -416,17 +416,131 @@ fn forge_parses_names_and_rejects_unknown() {
 }
 
 #[test]
-fn forge_review_supported_but_serve_gated_for_gitlab() {
+fn ensure_supported_allows_both_forges() {
     use greybeard::config::Forge;
-    use greybeard::forge::{ensure_supported, ensure_webhook_supported};
-    // CLI review is supported for both forges now.
+    use greybeard::forge::ensure_supported;
+    // Both CLI review and serve mode support both forges now.
     assert!(ensure_supported(Forge::GitHub).is_ok());
     assert!(ensure_supported(Forge::GitLab).is_ok());
-    // The webhook service is still GitHub-only; GitLab serve is gated clearly.
-    assert!(ensure_webhook_supported(Forge::GitHub).is_ok());
-    let err = ensure_webhook_supported(Forge::GitLab).unwrap_err().to_string();
-    assert!(err.contains("gitlab"), "error should name the forge: {err}");
-    assert!(err.contains("docs/GITLAB.md"), "error should point at the design doc: {err}");
+}
+
+#[test]
+fn gitlab_webhook_token_verify_is_constant_length_exact() {
+    use greybeard::webhook::verify_gitlab_token;
+    assert!(verify_gitlab_token("s3cret", "s3cret"));
+    assert!(!verify_gitlab_token("s3cret", "s3crex"));
+    assert!(!verify_gitlab_token("s3cret", "s3cre")); // length mismatch
+    assert!(!verify_gitlab_token("s3cret", "")); // empty received never matches
+}
+
+#[test]
+fn gitlab_webhook_parses_mr_push_and_ignores_label_edit() {
+    use greybeard::webhook::{parse_gitlab, Verdict};
+    let base = serde_json::json!({
+        "user": {"username": "dev"},
+        "project": {"path_with_namespace": "group/sub/proj"},
+        "object_attributes": {"iid": 7, "draft": false, "action": "update"}
+    });
+    // `update` with an oldrev is a code push → review.
+    let mut push = base.clone();
+    push["object_attributes"]["oldrev"] = serde_json::json!("abc123");
+    match parse_gitlab("greybeard-bot", "Merge Request Hook", &push) {
+        Verdict::Review(t) => {
+            assert_eq!((t.pr.owner.as_str(), t.pr.repo.as_str(), t.pr.number), ("group/sub", "proj", 7));
+            assert!(!t.force);
+        }
+        _ => panic!("expected a review trigger for a push"),
+    }
+    // `update` without oldrev (label/assignee edit) → ignored.
+    assert!(matches!(
+        parse_gitlab("greybeard-bot", "Merge Request Hook", &base),
+        Verdict::Ignore(_)
+    ));
+    // Draft MR open → ignored.
+    let draft = serde_json::json!({
+        "project": {"path_with_namespace": "g/p"},
+        "object_attributes": {"iid": 1, "draft": true, "action": "open"}
+    });
+    assert!(matches!(
+        parse_gitlab("greybeard-bot", "Merge Request Hook", &draft),
+        Verdict::Ignore(_)
+    ));
+}
+
+#[test]
+fn gitlab_webhook_note_command_forces_review() {
+    use greybeard::webhook::{parse_gitlab, Verdict};
+    let note = serde_json::json!({
+        "user": {"username": "dev"},
+        "project": {"path_with_namespace": "group/proj"},
+        "merge_request": {"iid": 12},
+        "object_attributes": {"noteable_type": "MergeRequest", "note": "@greybeard-bot review please"}
+    });
+    match parse_gitlab("greybeard-bot", "Note Hook", &note) {
+        Verdict::Review(t) => {
+            assert_eq!((t.pr.owner.as_str(), t.pr.repo.as_str(), t.pr.number), ("group", "proj", 12));
+            assert!(t.force);
+            assert_eq!(t.action, "command");
+            assert_eq!(t.sender, "dev");
+        }
+        _ => panic!("expected a forced review from the note command"),
+    }
+    // A note that doesn't mention+review is ignored; a non-MR note is ignored.
+    let chatter = serde_json::json!({
+        "user": {"username": "dev"},
+        "object_attributes": {"noteable_type": "MergeRequest", "note": "looks good"}
+    });
+    assert!(matches!(parse_gitlab("greybeard-bot", "Note Hook", &chatter), Verdict::Ignore(_)));
+}
+
+#[test]
+fn github_webhook_parse_pull_request_and_command() {
+    use greybeard::webhook::{parse_github, Verdict};
+    let bot = "greybeard-bot[bot]";
+    let pr_event = serde_json::json!({
+        "action": "opened",
+        "pull_request": {"draft": false, "number": 5},
+        "repository": {"owner": {"login": "o"}, "name": "r"}
+    });
+    match parse_github(bot, "pull_request", &pr_event) {
+        Verdict::Review(t) => {
+            assert_eq!((t.pr.owner.as_str(), t.pr.repo.as_str(), t.pr.number), ("o", "r", 5));
+            assert!(!t.force);
+        }
+        _ => panic!("expected a review trigger"),
+    }
+    // Draft and irrelevant action are ignored; ping answers ping.
+    let mut draft = pr_event.clone();
+    draft["pull_request"]["draft"] = serde_json::json!(true);
+    assert!(matches!(parse_github(bot, "pull_request", &draft), Verdict::Ignore(_)));
+    let mut labeled = pr_event.clone();
+    labeled["action"] = serde_json::json!("labeled");
+    assert!(matches!(parse_github(bot, "pull_request", &labeled), Verdict::Ignore(_)));
+    assert!(matches!(parse_github(bot, "ping", &serde_json::json!({})), Verdict::Ping));
+    // Mention command on a PR forces a review.
+    let cmd = serde_json::json!({
+        "action": "created",
+        "issue": {"pull_request": {}, "number": 9},
+        "comment": {"body": "@greybeard-bot review", "user": {"login": "dev"}},
+        "repository": {"full_name": "o/r"}
+    });
+    match parse_github(bot, "issue_comment", &cmd) {
+        Verdict::Review(t) => {
+            assert!(t.force);
+            assert_eq!(t.action, "command");
+            assert_eq!((t.pr.owner.as_str(), t.pr.repo.as_str(), t.pr.number), ("o", "r", 9));
+        }
+        _ => panic!("expected a forced review from the command"),
+    }
+}
+
+#[test]
+fn gitlab_pr_from_project_path() {
+    use greybeard::gitlab::pr_from_project_path;
+    let p = pr_from_project_path("group/sub/proj", 5).unwrap();
+    assert_eq!((p.owner.as_str(), p.repo.as_str(), p.number), ("group/sub", "proj", 5));
+    assert!(pr_from_project_path("lonely", 5).is_none());
+    assert!(pr_from_project_path("group/proj", 0).is_none());
 }
 
 #[test]

@@ -10,3 +10,4 @@ pub mod pipeline;
 pub mod prompts;
 pub mod server;
 pub mod telemetry;
+pub mod webhook;
