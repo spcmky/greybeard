@@ -73,7 +73,7 @@ backoff. Pack content is treated as untrusted data — the prompts forbid it
 from lowering scrutiny (see the trust-boundary paragraph in `src/prompts.rs`).
 
 Deploy is GitOps: CI (`.github/workflows/ci.yml`) tests every PR and pushes a
-sha7 image to ECR from master; deploying is a tag bump in the
+sha7 image to ECR from main; deploying is a tag bump in the
 `helm/tools/greybeard` chart in your infra repo, which ArgoCD rolls out. The
 chart also ships the ServiceMonitor for /metrics and path-limits the
 internet-facing ingress to `/webhook` + `/health`.
