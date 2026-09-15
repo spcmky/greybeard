@@ -1,0 +1,31 @@
+Greybeard {{ .Chart.AppVersion }} deployed as {{ include "greybeard.fullname" . }}.
+
+1. Secrets: this release reads env from Secret "{{ .Values.existingSecret }}".
+   Make sure it exists and contains at least GREYBEARD_WEBHOOK_SECRET and your
+   provider creds (ANTHROPIC_API_KEY, or AWS creds for Bedrock):
+
+     kubectl -n {{ .Release.Namespace }} create secret generic {{ .Values.existingSecret }} \
+       --from-literal=GREYBEARD_WEBHOOK_SECRET=... \
+       --from-literal=ANTHROPIC_API_KEY=sk-ant-...
+
+{{- if .Values.githubApp.enabled }}
+   GitHub App auth is ON — also create the private-key secret:
+
+     kubectl -n {{ .Release.Namespace }} create secret generic {{ .Values.githubApp.privateKey.secretName }} \
+       --from-file={{ .Values.githubApp.privateKey.secretKey }}=greybeard.pem
+{{- end }}
+
+2. Point your GitHub App webhook at:
+{{- if .Values.ingress.enabled }}
+     https://{{ .Values.ingress.host }}/webhook
+{{- else }}
+     (no ingress enabled) — expose the Service or enable ingress, then use
+     https://<host>/webhook
+{{- end }}
+
+3. Health / metrics:
+     kubectl -n {{ .Release.Namespace }} port-forward svc/{{ include "greybeard.fullname" . }} {{ .Values.service.port }}:{{ .Values.service.port }}
+     curl localhost:{{ .Values.service.port }}/health
+     curl localhost:{{ .Values.service.port }}/metrics
+
+Full walkthrough: docs/SETUP.md

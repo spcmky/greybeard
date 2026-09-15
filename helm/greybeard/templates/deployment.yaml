@@ -1,0 +1,96 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "greybeard.fullname" . }}
+  labels:
+    {{- include "greybeard.labels" . | nindent 4 }}
+spec:
+  # Single writer per PR is coordinated in-process; keep replicas at 1 unless
+  # you front it with sticky routing.
+  replicas: {{ .Values.replicaCount }}
+  selector:
+    matchLabels:
+      {{- include "greybeard.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "greybeard.selectorLabels" . | nindent 8 }}
+      {{- with .Values.podAnnotations }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+    spec:
+      serviceAccountName: {{ include "greybeard.serviceAccountName" . }}
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      containers:
+        - name: greybeard
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          args: ["serve", "--port", "{{ .Values.service.port }}"]
+          ports:
+            - name: http
+              containerPort: {{ .Values.service.port }}
+          env:
+            {{- range $k, $v := .Values.env }}
+            - name: {{ $k }}
+              value: {{ $v | quote }}
+            {{- end }}
+            {{- if .Values.githubApp.enabled }}
+            - name: GREYBEARD_APP_ID
+              value: {{ .Values.githubApp.appId | quote }}
+            - name: GREYBEARD_APP_PRIVATE_KEY
+              value: {{ .Values.githubApp.privateKey.mountPath | quote }}
+            {{- end }}
+          envFrom:
+            - secretRef:
+                name: {{ .Values.existingSecret }}
+          {{- if .Values.githubApp.enabled }}
+          volumeMounts:
+            - name: app-key
+              mountPath: {{ dir .Values.githubApp.privateKey.mountPath | quote }}
+              readOnly: true
+          {{- end }}
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 20
+          # /health is always 200 (degraded is a body flag, not a failure), so
+          # a failing review never restarts the pod — intended.
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 3
+            periodSeconds: 10
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+          securityContext:
+            {{- toYaml .Values.securityContext | nindent 12 }}
+      {{- if .Values.githubApp.enabled }}
+      volumes:
+        - name: app-key
+          secret:
+            secretName: {{ .Values.githubApp.privateKey.secretName }}
+            items:
+              - key: {{ .Values.githubApp.privateKey.secretKey }}
+                path: {{ base .Values.githubApp.privateKey.mountPath }}
+      {{- end }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}

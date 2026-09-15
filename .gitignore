@@ -1,2 +1,7 @@
 /target
 greybeard-runs.jsonl
+
+# Local secrets — never commit
+greybeard.env
+*.pem
+.DS_Store

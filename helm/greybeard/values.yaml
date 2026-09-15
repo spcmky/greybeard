@@ -1,0 +1,98 @@
+# Greybeard Helm values. See docs/SETUP.md for the full walkthrough.
+
+replicaCount: 1
+
+image:
+  repository: greybeard
+  # Defaults to .Chart.AppVersion when empty.
+  tag: ""
+  pullPolicy: IfNotPresent
+
+imagePullSecrets: []
+nameOverride: ""
+fullnameOverride: ""
+
+# Non-secret environment. Add any GREYBEARD_* / AWS_REGION overrides here.
+# Secrets (API keys, webhook secret) come from existingSecret below — never
+# put them here.
+env:
+  GREYBEARD_LENS_MODEL: claude-opus-5
+  # GREYBEARD_PROVIDER: bedrock
+  # AWS_REGION: us-east-2
+
+# Name of a pre-created Secret whose keys are injected as environment variables
+# (via envFrom). It MUST contain:
+#   - GREYBEARD_WEBHOOK_SECRET        (required for serve)
+#   - ANTHROPIC_API_KEY              (provider=anthropic)  OR the AWS creds your
+#                                     node role / IRSA doesn't already provide
+# Create it out of band, e.g.:
+#   kubectl create secret generic greybeard-secrets \
+#     --from-literal=GREYBEARD_WEBHOOK_SECRET=... \
+#     --from-literal=ANTHROPIC_API_KEY=sk-ant-...
+existingSecret: greybeard-secrets
+
+# GitHub App auth — comments post as the bot. The private key is mounted from a
+# Secret (create it with --from-file=app-private-key=greybeard.pem).
+githubApp:
+  enabled: false
+  appId: ""
+  privateKey:
+    secretName: greybeard-app-key
+    secretKey: app-private-key
+    mountPath: /secrets/greybeard.pem
+
+service:
+  type: ClusterIP
+  port: 8080
+
+# Ingress for GitHub -> /webhook. Restrict the public surface to /webhook and
+# /health; keep /metrics internal (scrape it via the Service / ServiceMonitor).
+ingress:
+  enabled: false
+  className: ""
+  host: greybeard.example.com
+  annotations: {}
+  paths:
+    - /webhook
+    - /health
+  tls: []
+  # - secretName: greybeard-tls
+  #   hosts:
+  #     - greybeard.example.com
+
+# Prometheus Operator ServiceMonitor for /metrics.
+serviceMonitor:
+  enabled: false
+  interval: 30s
+  labels: {}
+
+resources:
+  requests:
+    cpu: 100m
+    memory: 128Mi
+  limits:
+    memory: 512Mi
+
+# arm64 by default — the released image is built for Graviton. Adjust for amd64.
+nodeSelector:
+  kubernetes.io/arch: arm64
+tolerations: []
+affinity: {}
+podAnnotations: {}
+
+# The image already runs as uid 10001 non-root; this hardens the pod further.
+podSecurityContext:
+  runAsNonRoot: true
+  seccompProfile:
+    type: RuntimeDefault
+securityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  capabilities:
+    drop: ["ALL"]
+
+serviceAccount:
+  create: true
+  name: ""
+  # For Bedrock via IRSA, put the role ARN here:
+  annotations: {}

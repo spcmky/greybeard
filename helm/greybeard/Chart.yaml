@@ -1,0 +1,10 @@
+apiVersion: v2
+name: greybeard
+description: Greybeard — automatic PR review service (GitHub App webhook -> reviews)
+type: application
+version: 0.1.0
+# App version tracks the greybeard binary/image tag deployed by default.
+appVersion: "1.2.0"
+home: https://github.com/spcmky/greybeard
+sources:
+  - https://github.com/spcmky/greybeard

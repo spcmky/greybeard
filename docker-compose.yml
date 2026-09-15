@@ -1,0 +1,29 @@
+# Local Greybeard. See docs/SETUP.md.
+#
+#   cp greybeard.env.example greybeard.env   # then fill it in
+#   docker compose up --build                # runs the webhook service on :8080
+#
+# Automatic PR review needs GitHub to reach /webhook — tunnel it in dev, e.g.
+#   cloudflared tunnel --url http://localhost:8080
+#   ngrok http 8080
+# and set the GitHub App webhook URL to <tunnel>/webhook.
+#
+# One-shot local review (no service needed):
+#   docker compose run --rm greybeard review https://github.com/OWNER/REPO/pull/N --dry-run
+
+services:
+  greybeard:
+    build: .
+    image: greybeard:local
+    command: ["serve", "--port", "8080"]
+    ports:
+      - "8080:8080"
+    env_file:
+      - greybeard.env
+    restart: unless-stopped
+    # Uncomment if using GitHub App auth — match GREYBEARD_APP_PRIVATE_KEY:
+    # volumes:
+    #   - ./greybeard.pem:/secrets/greybeard.pem:ro
+    # Uncomment for Bedrock (mount host AWS creds):
+    # volumes:
+    #   - ~/.aws:/home/greybeard/.aws:ro

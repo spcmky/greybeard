@@ -27,6 +27,13 @@ The context pack is rendered **byte-deterministically** — it is the shared
 prompt-cache prefix for every model call. Watch `cache_rd` in the telemetry table:
 zero on repeat calls means a nondeterminism bug crept into the pack renderer.
 
+## Setup
+
+**[docs/SETUP.md](docs/SETUP.md)** is the full guide. Two ways to run it:
+
+1. **Local review** — run the CLI (or `docker compose`) against a PR from your machine.
+2. **Automatic review** — a GitHub App + webhook service reviews every PR on open/update. Deploy it with the bundled [Helm chart](helm/greybeard) or [`docker-compose.yml`](docker-compose.yml).
+
 ## Usage
 
 ```sh
