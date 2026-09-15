@@ -9,6 +9,8 @@ Greybeard runs in two modes. Pick the one that matches how you want reviews to h
 
 Both modes share the same pipeline and the same [model provider](#model-provider) and [GitHub App](#github-app-comments-post-as-the-bot) configuration — only the trigger differs.
 
+Greybeard supports both **GitHub** and **GitLab**, selected with `GREYBEARD_FORGE` (default `github`). The sections below are written for GitHub; for GitLab merge requests, read [GitLab](#gitlab) — the pipeline is identical, only the coordinates and webhook wiring differ.
+
 ---
 
 ## Prerequisites (both modes)
@@ -25,7 +27,7 @@ Both modes share the same pipeline and the same [model provider](#model-provider
 
 2. **A model provider** — see [Model provider](#model-provider) below.
 
-3. **GitHub access** — a user token for local mode, or a GitHub App for automatic mode.
+3. **Forge access** — GitHub (a user token for local mode, or a GitHub App for automatic mode), or GitLab (an access token); see [GitLab](#gitlab).
 
 ---
 
@@ -201,7 +203,7 @@ Endpoints:
 
 | Path | Purpose |
 | --- | --- |
-| `POST /webhook` | GitHub webhook receiver (HMAC-verified). |
+| `POST /webhook` | Webhook receiver — GitHub (HMAC) or GitLab (`X-Gitlab-Token`). |
 | `GET /health` | Always HTTP 200; body reports `degraded` after 3 consecutive review failures. Use it as your load-balancer target check. |
 | `GET /metrics` | Prometheus text: reviews by outcome, duration, tokens, cost, inflight, failure streak. |
 
@@ -236,12 +238,68 @@ Confirm with `greybeard auth-check` — it prints `auth mode: app` when the App 
 
 ---
 
+## GitLab
+
+Greybeard reviews GitLab merge requests too — set `GREYBEARD_FORGE=gitlab`. GitLab has no App / installation model: identity is a single **access token** (personal, project, or group), sent as `PRIVATE-TOKEN`. A dedicated **project or group access token** makes reviews post as a bot user. For self-managed GitLab set `GREYBEARD_FORGE_URL` to your instance root (e.g. `https://gitlab.example.com`) — the REST v4 API base is derived as `<root>/api/v4`; public gitlab.com needs no URL. Nested namespaces (`group/subgroup/project`) are supported. `GITLAB_TOKEN` is accepted as an alias for `GREYBEARD_TOKEN`.
+
+The two modes and the whole pipeline are identical to GitHub — only the coordinates differ (a merge-request URL and iid, notes instead of PR comments).
+
+### Local review (Mode 1)
+
+The token needs **`api`** scope (read the MR, diffs, file contents, and CI pipeline; post/update the review note).
+
+```sh
+export GREYBEARD_FORGE=gitlab
+export GREYBEARD_TOKEN=glpat-...                          # PAT / project / group token, api scope
+# export GREYBEARD_FORGE_URL=https://gitlab.example.com   # self-managed only
+export ANTHROPIC_API_KEY=sk-ant-...                       # or configure Bedrock
+
+greybeard auth-check                                      # -> auth mode: access token / authenticated as: <user>
+greybeard review https://gitlab.com/GROUP/PROJECT/-/merge_requests/N --dry-run
+greybeard review https://gitlab.com/GROUP/PROJECT/-/merge_requests/N
+```
+
+`pack <mr-url>` (context pack only, no model calls) and `--force` work the same as GitHub.
+
+### Automatic review (Mode 2)
+
+`greybeard serve` handles GitLab webhooks natively — no App to create, just a project or group webhook.
+
+1. **Create the token** the service posts with — a **project** or **group access token** with `api` scope (project/group **Settings → Access tokens**). Set it as `GREYBEARD_TOKEN`, and set `GREYBEARD_BOT_LOGIN` to that token user's username so the `@mention` command channel and self-note filtering match.
+
+2. **Add a webhook** (project **Settings → Webhooks**):
+   - **URL:** `https://<your-host>/webhook`
+   - **Secret token:** a strong random string; pass the same value as `GREYBEARD_WEBHOOK_SECRET`. GitLab sends it verbatim in the `X-Gitlab-Token` header; greybeard compares it in constant time (no HMAC). Deliveries without a matching token are rejected.
+   - **Triggers:** **Merge request events** and **Comments** (note events).
+
+3. **Run it** like the GitHub service, minus the App vars:
+
+   ```sh
+   export GREYBEARD_FORGE=gitlab
+   export GREYBEARD_TOKEN=glpat-...                          # project/group token
+   export GREYBEARD_WEBHOOK_SECRET=<same as the webhook's secret token>
+   export GREYBEARD_BOT_LOGIN=<the token user's username>
+   export ANTHROPIC_API_KEY=sk-ant-...
+   # export GREYBEARD_FORGE_URL=https://gitlab.example.com   # self-managed only
+   greybeard serve --port 8080
+   ```
+
+**Which events trigger a review:**
+- **Merge request** hooks: `open`, `reopen`, and `update` **only when it carries a code push** (an `oldrev`) — label / assignee / description edits do not trigger a review. Draft MRs are skipped.
+- **Note** hooks: a comment starting with `@<bot> review` on an MR forces a re-review (same per-user cooldown as GitHub).
+
+Deliveries are deduped on `X-Gitlab-Event-UUID`; the debounce, concurrency cap, daily circuit breaker, and spend guardrails are identical to GitHub. The Helm deployment is the same — only the env vars above change.
+
+> **v1 limits:** the GitLab pack does not yet include git-blame or prior-review-comment context (those sections stay empty), and bot-author detection uses a username heuristic. See [docs/GITLAB.md](GITLAB.md).
+
+---
+
 ## Configuration reference
 
 | Var | Meaning | Default |
 | --- | --- | --- |
-| `GREYBEARD_FORGE` | code host: `github` or `gitlab` | `github` (GitLab is [in design](GITLAB.md), not yet implemented) |
-| `GREYBEARD_TOKEN` | forge access token (`GITHUB_TOKEN` / `GH_TOKEN` still accepted) | falls back to `gh auth token` |
+| `GREYBEARD_FORGE` | code host: `github` or `gitlab` (see [GitLab](#gitlab)) | `github` |
+| `GREYBEARD_TOKEN` | forge access token — GitHub (`GITHUB_TOKEN` / `GH_TOKEN` accepted) or GitLab (`GITLAB_TOKEN` accepted; sent as `PRIVATE-TOKEN`) | GitHub falls back to `gh auth token` |
 | `GREYBEARD_FORGE_URL` | base URL for a self-hosted forge (GH Enterprise / self-managed GitLab) | the forge's public host |
 | `GREYBEARD_PROVIDER` | `anthropic` or `bedrock` | `anthropic` if `ANTHROPIC_API_KEY` set, else `bedrock` |
 | `ANTHROPIC_API_KEY` | Anthropic API key (provider=anthropic) | — |
@@ -250,7 +308,7 @@ Confirm with `greybeard auth-check` — it prints `auth mode: app` when the App 
 | `AWS_REGION` / `AWS_DEFAULT_REGION` | Bedrock region | `us-east-2` |
 | `GITHUB_TOKEN` / `GH_TOKEN` | GitHub token — alias for `GREYBEARD_TOKEN` | falls back to `gh auth token` |
 | `GREYBEARD_APP_ID` + `GREYBEARD_APP_PRIVATE_KEY` (pem path) + `GREYBEARD_APP_INSTALLATION_ID` | GitHub App identity — when set it takes precedence and comments post as the app bot; in serve mode the webhook payload's installation ID overrides the env pin | unset (user token) |
-| `GREYBEARD_WEBHOOK_SECRET` | HMAC secret for webhook verification — **required for `serve`** | — |
+| `GREYBEARD_WEBHOOK_SECRET` | webhook verification secret — **required for `serve`**. GitHub: HMAC key (`X-Hub-Signature-256`). GitLab: the plain `X-Gitlab-Token` value (constant-time compared) | — |
 | `GREYBEARD_BOT_LOGIN` | the bot's login, for @-mention matching and self-comment filtering | `greybeard-bot[bot]` |
 | `GREYBEARD_MAX_CONCURRENT` / `GREYBEARD_DAILY_REVIEW_LIMIT` | serve-mode spend guardrails | 2 / 50 per UTC day |
 | `GREYBEARD_REVIEW_BOT_PRS` | review PRs authored by bots (dependabot etc.) | `false` |
