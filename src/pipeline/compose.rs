@@ -87,6 +87,7 @@ pub fn render_comment(
     candidates: usize,
     lenses_run: usize,
     unverified: usize,
+    lenses_failed: usize,
 ) -> String {
     let short_sha = &head_sha[..head_sha.len().min(7)];
     let mut out = String::from("## Greybeard review\n\n");
@@ -144,19 +145,31 @@ pub fn render_comment(
         out.push_str("\n</details>\n");
     }
 
+    // A degraded run degrades LOUDLY: no verdict line, explicit warnings instead
+    // (bake-off 2026-08-17 — never a silent "You shall pass"). Two independent
+    // ways to degrade: a lens that never produced findings (find stage failed →
+    // incomplete coverage), or a dead verifier (verify stage failed → findings
+    // dropped). Either one suppresses the verdict.
+    let degraded = unverified > 0 || lenses_failed > 0;
+    if lenses_failed > 0 {
+        out.push_str(&format!(
+            "\n**Coverage incomplete:** {lenses_failed} of {lenses_run} review lens{} failed to \
+             run on this pass — those checks did not happen. Treat this review as incomplete.\n",
+            if lenses_failed == 1 { "" } else { "es" },
+        ));
+    }
     if unverified > 0 {
-        // A dead verifier degrades loudly: no verdict line, an explicit warning
-        // instead (bake-off 2026-08-17 — never a silent "You shall pass").
         out.push_str(&format!(
             "\n**Verification degraded:** {unverified} candidate finding{} could not be \
              verified on this run and {} not shown. Treat this review as incomplete.\n",
             if unverified == 1 { "" } else { "s" },
             if unverified == 1 { "is" } else { "are" },
         ));
-    } else {
+    }
+    if !degraded {
         out.push_str(&format!("\n_{}_\n", verdict_line(confirmed, minor)));
     }
-    let verdict = if unverified > 0 {
+    let verdict = if degraded {
         "degraded"
     } else if confirmed.iter().any(|c| c.finding.severity == "blocker") {
         "blocked"

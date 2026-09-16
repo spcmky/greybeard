@@ -24,10 +24,10 @@ const PR_QUERY: &str = r#"
 query($owner:String!,$repo:String!,$number:Int!){
   repository(owner:$owner,name:$repo){
     pullRequest(number:$number){
-      id state isDraft title body baseRefName headRefOid
+      id state isDraft title body baseRefName baseRefOid headRefOid
       author{login __typename}
       files(first:100){nodes{path additions deletions changeType}}
-      comments(last:100){nodes{id body}}
+      comments(first:100){nodes{id body viewerDidAuthor} pageInfo{hasNextPage endCursor}}
       commits(last:1){nodes{commit{statusCheckRollup{
         state
         contexts(first:50){nodes{
@@ -39,6 +39,14 @@ query($owner:String!,$repo:String!,$number:Int!){
     }
   }
 }"#;
+
+/// REST path for the PR diff pinned to a specific head revision. The compare
+/// endpoint (`base...head`) with the reviewed head SHA keeps the diff consistent
+/// with the file contents and blame, which are fetched at the same SHA — a push
+/// mid-build can no longer mix a newer diff with older file contents.
+pub fn pr_diff_path(pr: &PrRef, base: &str, head_sha: &str) -> String {
+    format!("/repos/{}/{}/compare/{base}...{head_sha}", pr.owner, pr.repo)
+}
 
 /// Fetch and render the context pack from GitHub.
 pub async fn build(gh: &Github, pr: &PrRef, cfg: &Config) -> Result<ContextPack> {
@@ -66,9 +74,7 @@ pub async fn build(gh: &Github, pr: &PrRef, cfg: &Config) -> Result<ContextPack>
     let author_is_bot = p["author"]["__typename"] == "Bot";
     let base_ref = p["baseRefName"].as_str().unwrap_or("?").to_string();
 
-    let existing_comment = p["comments"]["nodes"]
-        .as_array()
-        .and_then(|nodes| super::comment::find_marker_graphql(nodes));
+    let existing_comment = find_existing_comment(gh, pr, &p["comments"]).await?;
 
     let mut changed_files: Vec<ChangedFile> = p["files"]["nodes"]
         .as_array()
@@ -88,7 +94,13 @@ pub async fn build(gh: &Github, pr: &PrRef, cfg: &Config) -> Result<ContextPack>
 
     // ── Step 2: parallel — diff (REST media), file contents (REST contents),
     //    CLAUDE.md files, blame (GraphQL), prior-PR feedback (GraphQL) ───────
-    let diff_url = format!("/repos/{}/{}/pulls/{}", pr.owner, pr.repo, pr.number);
+    // Pin the diff to the captured head sha (compare endpoint) rather than the
+    // mutable pulls/{n} diff: file contents and blame below are fetched at
+    // head_sha, so an unpinned diff could mix a newer push's changes with older
+    // file contents and citations.
+    let base_sha = p["baseRefOid"].as_str().unwrap_or_default();
+    let diff_base = if base_sha.is_empty() { base_ref.as_str() } else { base_sha };
+    let diff_url = pr_diff_path(pr, diff_base, &head_sha);
     let diff_fut = gh.get_raw(&diff_url, "application/vnd.github.diff");
 
     let content_paths: Vec<String> = changed_files
@@ -162,6 +174,54 @@ pub async fn build(gh: &Github, pr: &PrRef, cfg: &Config) -> Result<ContextPack>
         prior_comments: prior_comments.unwrap_or_default(),
     };
     Ok(data.finish(cfg, started))
+}
+
+const COMMENTS_PAGE_QUERY: &str = r#"
+query($owner:String!,$repo:String!,$number:Int!,$after:String!){
+  repository(owner:$owner,name:$repo){
+    pullRequest(number:$number){
+      comments(first:100,after:$after){nodes{id body viewerDidAuthor} pageInfo{hasNextPage endCursor}}
+    }
+  }
+}"#;
+
+/// Find greybeard's own existing comment, following comment pagination until the
+/// marker is found or the comments are exhausted. Greybeard comments early and
+/// updates in place, so it is almost always on the first page (`first:100`);
+/// only a PR with >100 comments ahead of ours costs extra round-trips. Without
+/// this, an existing review outside the first page is missed and a duplicate
+/// comment gets posted.
+async fn find_existing_comment(
+    gh: &Github,
+    pr: &PrRef,
+    first_page: &Value,
+) -> Result<Option<crate::pack::ExistingComment>> {
+    let mut connection = std::borrow::Cow::Borrowed(first_page);
+    let mut guard = 0;
+    loop {
+        if let Some(nodes) = connection["nodes"].as_array() {
+            if let Some(ec) = super::comment::find_marker_in_nodes(nodes) {
+                return Ok(Some(ec));
+            }
+        }
+        if connection["pageInfo"]["hasNextPage"].as_bool() != Some(true) {
+            return Ok(None);
+        }
+        let after = connection["pageInfo"]["endCursor"].as_str().unwrap_or_default().to_string();
+        guard += 1;
+        if guard > 50 {
+            // ~5000 comments scanned — stop rather than page forever.
+            return Ok(None);
+        }
+        let data = gh
+            .graphql(
+                COMMENTS_PAGE_QUERY,
+                json!({"owner": pr.owner, "repo": pr.repo, "number": pr.number, "after": after}),
+            )
+            .await
+            .context("PR comments pagination")?;
+        connection = std::borrow::Cow::Owned(data["repository"]["pullRequest"]["comments"].clone());
+    }
 }
 
 /// Convert GitHub's `statusCheckRollup` into the neutral [`CheckRollup`].

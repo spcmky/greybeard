@@ -49,7 +49,8 @@ greybeard pack   https://github.com/OWNER/REPO/pull/N     # print the pack, no m
 ```
 
 `--dry-run` prints the comment instead of posting. `--force` reviews even if the PR
-is closed / draft / already reviewed at this SHA / judged trivial.
+is closed / draft / already fully reviewed at this SHA / judged trivial. (A prior
+review that ended degraded/incomplete re-runs on the same SHA without `--force`.)
 
 ### Examples
 
