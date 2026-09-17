@@ -23,7 +23,10 @@ fn default_severity() -> String {
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct LensReport {
-    #[serde(default)]
+    /// Required, NOT defaulted: a response missing this field (a bare `{}` or an
+    /// `{"error":...}` object) must fail to parse so the structured() retry
+    /// fires — otherwise it silently becomes a successful empty review. The
+    /// prompt and schema both ask for `{"findings": []}` when there is nothing.
     pub findings: Vec<Finding>,
 }
 

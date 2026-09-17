@@ -23,7 +23,7 @@ impl Forge for Github {
     }
 
     async fn upsert_comment(&self, pack: &ContextPack, body: &str) -> Result<String> {
-        let existing_id = pack.existing_comment.as_ref().map(|(id, _)| id.as_str());
+        let existing_id = pack.existing_comment.as_ref().map(|ec| ec.id.as_str());
         comment::upsert(self, &pack.pr_node_id, existing_id, body).await
     }
 

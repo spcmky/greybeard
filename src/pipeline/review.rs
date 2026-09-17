@@ -84,8 +84,11 @@ pub async fn run<F: Forge>(
             println!("skipped: bot-authored PR ({})", pack.author);
             return Ok(RunSummary::skipped(&format!("bot-authored PR ({})", pack.author), wall, telemetry));
         }
-        if let Some((_, sha)) = &pack.existing_comment {
-            if *sha == pack.head_sha {
+        // Skip only if a *completed* review of this exact head already exists.
+        // A degraded/incomplete prior review of the same head must be retried,
+        // not treated as done.
+        if let Some(ec) = &pack.existing_comment {
+            if ec.already_covers(&pack.head_sha) {
                 println!("skipped: already reviewed {}", &pack.head_sha[..7]);
                 return Ok(RunSummary::skipped("already reviewed this head", wall, telemetry));
             }
@@ -169,6 +172,9 @@ pub async fn run<F: Forge>(
         }
     });
     let results: Vec<Vec<_>> = join_all(lens_chains).await;
+    // All lens tasks are done — collapse the atomic to a plain count used both
+    // for the rendered comment (coverage warning) and the run summary.
+    let lenses_failed = lenses_failed.into_inner();
 
     let mut candidates_total = 0usize;
     let mut unverified = 0usize;
@@ -226,6 +232,7 @@ pub async fn run<F: Forge>(
         candidates_total,
         prompts::LENSES.len(),
         unverified,
+        lenses_failed,
     );
 
     if args.dry_run {
@@ -255,7 +262,7 @@ pub async fn run<F: Forge>(
         minor: minor.len(),
         candidates: candidates_total,
         unverified,
-        lenses_failed: lenses_failed.into_inner(),
+        lenses_failed,
         duration: wall.elapsed(),
         usage: telemetry.totals(),
     })

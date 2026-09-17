@@ -5,7 +5,7 @@
 
 use std::time::Instant;
 
-use anyhow::{Context, Result};
+use anyhow::{bail, Context, Result};
 use futures::future::join_all;
 
 use super::Gitlab;
@@ -45,7 +45,17 @@ pub async fn build(gl: &Gitlab, pr: &PrRef, cfg: &Config) -> Result<ContextPack>
     };
 
     // ── Existing greybeard note (marker) ───────────────────────────────────
-    let existing_comment = gl.find_marker_note(pr).await;
+    // Resolve our own username so a forged marker on someone else's note is not
+    // trusted; propagate a lookup failure (rather than treating it as "no note")
+    // so a transient error never posts a duplicate comment.
+    let me = gl
+        .current_username()
+        .await
+        .context("resolving bot identity for marker lookup")?;
+    let existing_comment = gl
+        .find_marker_note(pr, &me)
+        .await
+        .context("existing greybeard note lookup")?;
 
     // ── Diffs (paginated) → changed files + a GitHub-style unified diff ─────
     let diff_items = gl
@@ -89,6 +99,26 @@ pub async fn build(gl: &Gitlab, pr: &PrRef, cfg: &Config) -> Result<ContextPack>
         if let Some(f) = changed_files.iter_mut().find(|f| f.path == path) {
             f.content = content.map(|c| cap_lines(&c, cfg.max_file_lines));
         }
+    }
+
+    // Detect a push that landed mid-build: the diffs come from the mutable MR
+    // endpoint while file contents are pinned to head_sha, so a race could mix
+    // commits. GitLab's diffs endpoint can't be pinned to a sha the way GitHub's
+    // compare can, so re-check the head and bail on a mismatch rather than post a
+    // pack that blends two revisions — a newer push triggers a fresh review.
+    let current = gl
+        .get_json(&format!("/projects/{pid}/merge_requests/{iid}"))
+        .await
+        .context("re-checking MR head after pack build")?;
+    let now_head = current["diff_refs"]["head_sha"]
+        .as_str()
+        .or_else(|| current["sha"].as_str())
+        .unwrap_or_default();
+    if !head_sha.is_empty() && now_head != head_sha {
+        bail!(
+            "MR head advanced during pack build ({head_sha} -> {now_head}); skipping this run — \
+             the newer push will trigger a fresh review"
+        );
     }
 
     let data = PackData {

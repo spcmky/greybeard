@@ -107,10 +107,21 @@ That line is the entire lore budget. Findings, evidence, and the empty-result
 sentence stay plain-engineer — no wizard-speak anywhere else, ever. If a future
 change wants more personality, it competes for this same single line.
 
-**Degraded runs get no verdict line.** If any candidate finding could not be
-verified (verifier failure), the comment replaces the verdict with a bolded
-**Verification degraded** warning naming the unverified count. A review that
-could not finish never says "You shall pass."
+**Degraded runs get no verdict line.** A review that could not finish never says
+"You shall pass" — it replaces the verdict with a bolded warning and records
+`"verdict":"degraded"` in the marker. Two independent causes each suppress the
+verdict:
+
+- **Coverage incomplete** — one or more review lenses failed to run (the find
+  stage produced nothing for them), so those checks did not happen. The warning
+  names how many of the lenses failed.
+- **Verification degraded** — one or more candidate findings could not be
+  verified (verifier failure); the warning names the unverified count and those
+  findings are not shown.
+
+An incomplete review is not treated as "already reviewed": re-running on the same
+head sha reviews again rather than skipping (a degraded marker does not block a
+retry).
 
 ## Hard rules
 

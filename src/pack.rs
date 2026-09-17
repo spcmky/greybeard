@@ -56,6 +56,28 @@ pub fn permalink(
     }
 }
 
+/// The Greybeard comment already present on a change, if any: the id needed to
+/// update it in place, the sha it last reviewed, and whether that review
+/// completed. An incomplete (degraded) review must be retried, not skipped as
+/// "already reviewed".
+#[derive(Debug, Clone)]
+pub struct ExistingComment {
+    pub id: String,
+    pub sha: String,
+    /// False when the recorded marker verdict was "degraded" — coverage or
+    /// verification was incomplete, so a fresh run on the same head is wanted.
+    pub complete: bool,
+}
+
+impl ExistingComment {
+    /// True when this comment already holds a *completed* review of `head_sha`,
+    /// i.e. re-reviewing would be redundant. A degraded review of the same head
+    /// returns false so it gets another pass.
+    pub fn already_covers(&self, head_sha: &str) -> bool {
+        self.sha == head_sha && self.complete
+    }
+}
+
 /// One changed file in the PR.
 #[derive(Debug, Clone)]
 pub struct ChangedFile {
@@ -100,8 +122,9 @@ pub struct PackData {
     pub base_ref: String,
     pub author: String,
     pub author_is_bot: bool,
-    /// (comment node ID, reviewed sha) parsed from an existing Greybeard comment.
-    pub existing_comment: Option<(String, String)>,
+    /// The existing Greybeard comment (id + reviewed sha + completion), if one
+    /// authored by us is already on the change.
+    pub existing_comment: Option<ExistingComment>,
     /// Changed files with `content` and `changed_ranges` already populated.
     pub changed_files: Vec<ChangedFile>,
     pub diff: String,
@@ -154,8 +177,9 @@ pub struct ContextPack {
     pub author: String,
     pub author_is_bot: bool,
     pub changed_files: Vec<ChangedFile>,
-    /// (comment node ID, reviewed sha) parsed from an existing Greybeard comment.
-    pub existing_comment: Option<(String, String)>,
+    /// The existing Greybeard comment (id + reviewed sha + completion), if one
+    /// authored by us is already on the change.
+    pub existing_comment: Option<ExistingComment>,
     pub rendered: String,
     pub fetch_ms: u128,
 }
@@ -186,15 +210,33 @@ pub fn render(d: &PackData, cfg: &Config) -> String {
     out.push_str(&render_checks(&d.checks));
     out.push_str("</ci_status>\n\n");
 
+    // The diff draws from its own cap AND whatever pack budget remains, so no
+    // single section can push the whole pack past max_pack_chars.
     out.push_str("<diff>\n");
-    out.push_str(&budget_diff(&d.diff, cfg.max_diff_chars));
+    let diff_cap = cfg.max_diff_chars.min(cfg.max_pack_chars.saturating_sub(out.len()));
+    out.push_str(&budget_diff(&d.diff, diff_cap));
     out.push_str("\n</diff>\n\n");
 
+    // Guidance files are capped per file and budgeted against the pack ceiling.
+    // They used to be appended in full and unbounded — a large CLAUDE.md alone
+    // could exceed max_pack_chars and produce an oversized model request.
     for (path, content) in d.claude_mds.iter().filter(|(_, c)| c.is_some()) {
-        out.push_str(&format!(
-            "<claude_md path=\"{path}\">\n{}\n</claude_md>\n\n",
-            content.as_ref().unwrap()
-        ));
+        let open = format!("<claude_md path=\"{path}\">\n");
+        let close = "\n</claude_md>\n\n";
+        let overhead = open.len() + close.len();
+        let remaining = cfg.max_pack_chars.saturating_sub(out.len());
+        if remaining <= overhead {
+            break; // no room left for another section
+        }
+        let capped = cap_lines(content.as_ref().unwrap(), cfg.max_file_lines);
+        let body = fit_within(
+            &capped,
+            remaining - overhead,
+            "\n… [guidance truncated to fit the review context budget]",
+        );
+        out.push_str(&open);
+        out.push_str(&body);
+        out.push_str(close);
     }
 
     // Full file contents until the pack budget is spent. Which files make the
@@ -244,22 +286,41 @@ pub fn render(d: &PackData, cfg: &Config) -> String {
         .collect();
     blame_sections.sort_by(|a, b| a.0.cmp(&b.0));
     if !blame_sections.is_empty() {
-        out.push_str("<blame note=\"history of the lines this PR touches\">\n");
+        let mut block = String::from("<blame note=\"history of the lines this PR touches\">\n");
         for (path, b) in blame_sections {
-            out.push_str(&format!("## {path}\n{b}"));
+            block.push_str(&format!("## {path}\n{b}"));
         }
-        out.push_str("</blame>\n\n");
+        block.push_str("</blame>\n\n");
+        // Supplementary section: include only if it fits the remaining budget.
+        if out.len() + block.len() <= cfg.max_pack_chars {
+            out.push_str(&block);
+        }
     }
 
     if !d.prior_comments.is_empty() {
-        out.push_str(
-            "<prior_review_comments note=\"feedback on past PRs that touched these files\">\n",
+        let block = format!(
+            "<prior_review_comments note=\"feedback on past PRs that touched these files\">\n{}</prior_review_comments>\n\n",
+            d.prior_comments
         );
-        out.push_str(&d.prior_comments);
-        out.push_str("</prior_review_comments>\n\n");
+        if out.len() + block.len() <= cfg.max_pack_chars {
+            out.push_str(&block);
+        }
     }
 
     out
+}
+
+/// Truncate `s` to at most `max_bytes` on a char boundary, appending `note` when
+/// it was cut. Returns the whole string when it already fits.
+fn fit_within(s: &str, max_bytes: usize, note: &str) -> String {
+    if s.len() <= max_bytes {
+        return s.to_string();
+    }
+    let mut end = max_bytes.saturating_sub(note.len());
+    while end > 0 && !s.is_char_boundary(end) {
+        end -= 1;
+    }
+    format!("{}{note}", &s[..end])
 }
 
 /// Files whose diffs and contents are machine output — least reviewable,

@@ -2,16 +2,30 @@ use anyhow::Result;
 use serde_json::{json, Value};
 
 use super::{Github, PrRef};
+use crate::pack::ExistingComment;
 
 const MARKER_PREFIX: &str = "<!-- greybeard:";
 
-/// Scan GraphQL comment nodes for an existing Greybeard comment;
-/// returns (comment node ID, reviewed sha).
-pub fn find_marker_graphql(nodes: &[Value]) -> Option<(String, String)> {
+/// Scan a page of GraphQL comment nodes for greybeard's own existing comment.
+///
+/// SECURITY: only a comment the authenticated actor authored (`viewerDidAuthor`)
+/// is trusted. Without this check anyone who can comment on the PR could forge a
+/// marker — supplying the current head sha to suppress the review, or pointing
+/// the update at a comment they control. `viewerDidAuthor` is used rather than
+/// matching our own login because a GitHub App installation token cannot always
+/// resolve `viewer{login}` (see `Github::whoami`).
+pub fn find_marker_in_nodes(nodes: &[Value]) -> Option<ExistingComment> {
     for c in nodes {
+        if c["viewerDidAuthor"].as_bool() != Some(true) {
+            continue;
+        }
         let body = c["body"].as_str().unwrap_or("");
-        if let Some(sha) = parse_marker(body) {
-            return Some((c["id"].as_str()?.to_string(), sha));
+        if let Some((sha, verdict)) = parse_marker_full(body) {
+            return Some(ExistingComment {
+                id: c["id"].as_str()?.to_string(),
+                sha,
+                complete: verdict.as_deref() != Some("degraded"),
+            });
         }
     }
     None
@@ -19,11 +33,20 @@ pub fn find_marker_graphql(nodes: &[Value]) -> Option<(String, String)> {
 
 /// Extract the reviewed SHA from a marker like `<!-- greybeard:{"v":1,"sha":"abc"} -->`.
 pub fn parse_marker(body: &str) -> Option<String> {
+    parse_marker_full(body).map(|(sha, _)| sha)
+}
+
+/// Extract `(reviewed sha, verdict)` from a marker. Verdict is None for a v1
+/// marker (which carried no verdict field) — callers treat that as a completed
+/// review.
+pub fn parse_marker_full(body: &str) -> Option<(String, Option<String>)> {
     let start = body.find(MARKER_PREFIX)?;
     let rest = &body[start + MARKER_PREFIX.len()..];
     let end = rest.find("-->")?;
     let payload: Value = serde_json::from_str(rest[..end].trim()).ok()?;
-    payload["sha"].as_str().map(|s| s.to_string())
+    let sha = payload["sha"].as_str()?.to_string();
+    let verdict = payload["verdict"].as_str().map(|s| s.to_string());
+    Some((sha, verdict))
 }
 
 pub fn render_marker(sha: &str) -> String {

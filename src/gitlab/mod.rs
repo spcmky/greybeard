@@ -14,9 +14,9 @@ use serde_json::{json, Value};
 
 use crate::config::Config;
 use crate::forge::Forge;
-use crate::github::comment::parse_marker;
+use crate::github::comment::parse_marker_full;
 use crate::github::PrRef;
-use crate::pack::ContextPack;
+use crate::pack::{ContextPack, ExistingComment};
 
 /// REST v4 API base + web base from an optional forge root
 /// (`GREYBEARD_FORGE_URL`). `None` targets public gitlab.com; `Some(host)` a
@@ -91,6 +91,25 @@ pub fn enc(s: &str) -> String {
             _ => format!("%{b:02X}"),
         })
         .collect()
+}
+
+/// Scan a page of MR notes for greybeard's own marker. `me` is our username;
+/// only a note WE authored is trusted (a forged marker on someone else's note
+/// is ignored). Returns the note id, reviewed sha, and completion.
+pub fn find_marker_in_notes(notes: &[Value], me: &str) -> Option<ExistingComment> {
+    for n in notes {
+        if n["author"]["username"].as_str() != Some(me) {
+            continue;
+        }
+        if let Some((sha, verdict)) = parse_marker_full(n["body"].as_str().unwrap_or("")) {
+            return Some(ExistingComment {
+                id: n["id"].as_u64().unwrap_or(0).to_string(),
+                sha,
+                complete: verdict.as_deref() != Some("degraded"),
+            });
+        }
+    }
+    None
 }
 
 /// A crude bot-author heuristic. GitLab has no first-class bot-actor type
@@ -223,12 +242,26 @@ impl Gitlab {
         enc(&pr.project())
     }
 
-    /// Find greybeard's existing note by its marker, returning
-    /// `(note id, reviewed sha)`. Pages the MR notes newest-edited first and
-    /// stops at the first match, so an MR with many system notes (label
-    /// changes, commits, mentions) doesn't cost a full listing every review.
-    /// Any error mid-scan degrades to `None` — treated as "no existing note".
-    pub async fn find_marker_note(&self, pr: &PrRef) -> Option<(String, String)> {
+    /// The authenticated bot/user's username (`/user`) — used to recognise our
+    /// own notes when scanning for the marker.
+    pub async fn current_username(&self) -> Result<String> {
+        let u = self.get_json("/user").await?;
+        u["username"]
+            .as_str()
+            .map(|s| s.to_string())
+            .context("/user response had no username")
+    }
+
+    /// Find greybeard's existing note by its marker. `me` is our own username:
+    /// a marker is only trusted on a note WE authored, otherwise anyone who can
+    /// comment could forge review state. Pages the MR notes newest-edited first
+    /// and stops at the first match.
+    ///
+    /// Returns `Err` on any lookup failure (network, non-success status, bad
+    /// body): a failed lookup is NOT the same as "no note exists", and treating
+    /// it as such would post a duplicate comment. Callers propagate the error
+    /// and abort the run instead.
+    pub async fn find_marker_note(&self, pr: &PrRef, me: &str) -> Result<Option<ExistingComment>> {
         let pid = Self::project_id(pr);
         let iid = pr.number;
         let mut page: u32 = 1;
@@ -241,30 +274,29 @@ impl Gitlab {
                 "/projects/{pid}/merge_requests/{iid}/notes\
                  ?per_page=100&page={page}&order_by=updated_at&sort=desc"
             );
-            let r = self.request(reqwest::Method::GET, &url).send().await.ok()?;
+            let r = self.request(reqwest::Method::GET, &url).send().await?;
             let next = r
                 .headers()
                 .get("x-next-page")
                 .and_then(|v| v.to_str().ok())
                 .map(|s| s.trim().to_string())
                 .unwrap_or_default();
-            if !r.status().is_success() {
-                return None;
+            let status = r.status();
+            if !status.is_success() {
+                bail!("listing MR notes (page {page}): {status}");
             }
-            let v: Value = r.json().await.ok()?;
+            let v: Value = r.json().await?;
             if let Some(arr) = v.as_array() {
-                for n in arr {
-                    if let Some(sha) = parse_marker(n["body"].as_str().unwrap_or("")) {
-                        return Some((n["id"].as_u64().unwrap_or(0).to_string(), sha));
-                    }
+                if let Some(ec) = find_marker_in_notes(arr, me) {
+                    return Ok(Some(ec));
                 }
             }
             match next.parse::<u32>() {
                 Ok(p) if p > page => page = p,
-                _ => return None,
+                _ => return Ok(None),
             }
             if page > 200 {
-                return None;
+                return Ok(None);
             }
         }
     }
@@ -298,7 +330,7 @@ impl Forge for Gitlab {
     async fn upsert_comment(&self, pack: &ContextPack, body: &str) -> Result<String> {
         let pid = Self::project_id(&pack.pr);
         let iid = pack.pr.number;
-        let note_id = pack.existing_comment.as_ref().map(|(id, _)| id.clone());
+        let note_id = pack.existing_comment.as_ref().map(|ec| ec.id.clone());
         match note_id {
             Some(id) => {
                 let path = format!("/projects/{pid}/merge_requests/{iid}/notes/{id}");

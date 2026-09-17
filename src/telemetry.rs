@@ -85,9 +85,12 @@ impl Telemetry {
 }
 
 fn truncate(s: &str, n: usize) -> String {
-    if s.len() <= n {
+    // Count by chars, not bytes: a byte slice can split a multibyte char and
+    // panic. For ASCII (the common label case) this is identical to before.
+    if s.chars().count() <= n {
         s.to_string()
     } else {
-        format!("{}…", &s[..n - 1])
+        let kept: String = s.chars().take(n.saturating_sub(1)).collect();
+        format!("{kept}…")
     }
 }
