@@ -1,54 +1,51 @@
-# The gate — what posts and why
+# Finding verification
 
-Every candidate finding ends its life at the gate. A lens proposed it, the
-adversarial verifier returned `{real, confidence 0-100, reason}`, and the gate
-decides whether it reaches the PR comment. The verifier's rubric (inherited
-from a battle-tested review pipeline, kept verbatim in `src/prompts.rs`)
-deliberately blends two questions into the one confidence number: *is this
-real?* and *does it matter?* — 50 means "verified real but might be a nitpick",
-75 means "real and important". Any gate on that number is therefore a **posting
-policy**, not a correctness check.
+Discovery produces candidates. A separate verifier receives the current source
+for one candidate, applicable repository guidance, and a list of changed paths.
+It can request additional repository files, including unchanged dependencies.
+It has no execution tool and must not claim to have run tests.
 
-A bake-off against a suite of real PRs measured three policies:
+Every verdict has one of three outcomes:
 
-## A — flat ≥80 ("only speak when it matters")
+- `confirmed`: current-source citations support a reachable failure or explicit
+  rule violation, with confidence of at least 80.
+- `refuted`: current-source citations contradict the claim, with confidence of
+  at least 80.
+- `unverified`: evidence is missing or insufficient. This degrades the report
+  and suppresses the final pass/fail verdict.
 
-Post only `real && confidence >= 80`. Maximum signal; the brand stays "the
-reviewer that never wastes your time." The measured cost: ~90% of verified-TRUE
-findings are silently discarded (committed junk files at 60, an nginx gzip gap
-at 78, dead-code-with-false-comments at 60-68 — all things human reviewers do
-flag), and "No issues found" overclaims when the pipeline verified several true
-issues and chose silence. If this policy is ever restored, change the
-empty-result copy to "No blocking issues found."
+Confidence measures evidentiary certainty only. Severity describes impact and is
+reassessed by the verifier. Confirmed `blocker` and `gap` findings enter the main
+report; confirmed `nit` findings enter Minor notes. Uncertainty never becomes a
+minor finding.
 
-## B — confidence bands (CURRENT)
+Before accepting a factual verdict, Greybeard checks that each quote matches
+whole current-source lines at the supplied path and location. Leading and
+trailing whitespace on each quoted line may differ; the report uses the exact
+source text after validation. For confirmation,
+the verifier may supply or correct the discovery location, and its first citation must anchor the defect in the candidate file's new-side diff
+ranges. A surviving line next to a deletion may anchor a missing-case finding.
+A removed line cannot be evidence of current behavior. Confirmation also requires
+a trigger, expected and actual behavior, and an explanation of why existing
+safeguards do not prevent the failure. These fields appear in the report.
 
-- `real && confidence >= confidence_threshold` (80) → numbered findings, as ever.
-- `real && confidence >= minor_threshold` (60) → a collapsed **Minor notes**
-  `<details>` section: one line + permalink each, top-5 by confidence shown.
-- below 60 → dropped (stderr log only).
+A failed citation check is returned to the verifier for correction. Low confidence
+produces an unverified result immediately; it is never retried to raise the score. Verification
+has at most three rounds, eight source files, and 80 KB of source context. Missing
+files, exhausted budgets, model failures, and unsupported final verdicts remain
+unverified. Matching quotations establish source provenance; they do not prove
+that the model's causal argument is correct.
 
-Banding is by **verifier confidence**, not by the lens's blocker/gap/nit label —
-in the bake-off the junk-files find was labeled *gap* but scored 60; a
-severity-label rule would still suppress it. Dedupe runs within each band, then
-minor drops anything colliding with a confirmed finding (higher band wins).
-Verdict line: minor-only reviews close with "Pass — but mind the cracks in the
-bridge", not "You shall pass."
+Discovery groups files by directory and size, with an 80 KB context budget per
+call. Applicable lens instructions share one discovery call per batch.
+CI/config, guidance, history, and prior-feedback checks run only when their
+inputs are present. Each batch verifies at most eight candidates; any additional
+candidates count as unverified and make the report incomplete. Large individual files or diffs may still be omitted from
+discovery, with omission notes in the context. Source needed to verify a candidate
+is fetched independently of those discovery limits.
 
-Measured on the five-PR suite: posts ~8 additional real findings, still 0
-false positives. The headline section is unchanged; the minor section is
-folded shut by default.
-
-## C — flat ≥60
-
-Everything B posts, but promoted into the main numbered list. Rejected: it
-dilutes the headline with minor items, lets nits drive the verdict line, and
-walks straight toward the noise reputation this tool exists to avoid.
-
-## Re-tuning
-
-The thresholds live in `src/config.rs` (`confidence_threshold`,
-`minor_threshold`). To re-measure a change: run the bake-off PR suite in
-`--dry-run --force` and fan the
-outputs through judge agents comparing against the recorded baselines. One
-command each way — don't tune by anecdote.
+Use the opt-in evaluation documented in README.md to compare workflow or model
+changes. Its negative cases are four false positives from a Reliquary review;
+its positive cases remove the corresponding protections. Report both missed
+bugs and false alarms, and retain unknown results as unknown. A confidence
+score is a model assessment, not a calibrated probability.

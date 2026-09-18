@@ -38,6 +38,8 @@ pub trait Forge {
     /// Fetch everything for `pr` and render the deterministic context pack.
     async fn build_pack(&self, pr: &PrRef, cfg: &Config) -> Result<ContextPack>;
 
+    async fn file_contents(&self, pr: &PrRef, path: &str, sha: &str) -> Result<Option<String>>;
+
     /// Create the single Greybeard comment, or update it in place; returns its
     /// URL. Never stacks a second comment.
     async fn upsert_comment(&self, pack: &ContextPack, body: &str) -> Result<String>;
@@ -74,6 +76,12 @@ impl Forge for ForgeClient {
             ForgeClient::GitLab(g) => g.build_pack(pr, cfg).await,
         }
     }
+    async fn file_contents(&self, pr: &PrRef, path: &str, sha: &str) -> Result<Option<String>> {
+        match self {
+            ForgeClient::GitHub(g) => g.file_contents(pr, path, sha).await,
+            ForgeClient::GitLab(g) => g.file_contents(pr, path, sha).await,
+        }
+    }
     async fn upsert_comment(&self, pack: &ContextPack, body: &str) -> Result<String> {
         match self {
             ForgeClient::GitHub(g) => g.upsert_comment(pack, body).await,
@@ -96,7 +104,6 @@ pub fn parse_ref(cfg: &Config, url: &str) -> Result<PrRef> {
         ForgeKind::GitLab => crate::gitlab::parse_mr_url(url),
     }
 }
-
 
 /// Fail early and clearly for a forge that has no backend yet. Pure (no IO), so
 /// CLI and serve startup can both gate on it before doing any work — and it's

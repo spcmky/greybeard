@@ -142,6 +142,7 @@ impl PackData {
     pub fn finish(self, cfg: &Config, started: Instant) -> ContextPack {
         let rendered = render(&self, cfg);
         ContextPack {
+            source: std::sync::Arc::new(self.clone()),
             pr: self.pr,
             pr_node_id: self.pr_node_id,
             head_sha: self.head_sha,
@@ -167,6 +168,7 @@ impl PackData {
 /// diff media type and the contents API use REST.
 #[derive(Debug, Clone)]
 pub struct ContextPack {
+    pub source: std::sync::Arc<PackData>,
     pub pr: PrRef,
     /// GraphQL node ID of the PR (subjectId for addComment).
     pub pr_node_id: String,
@@ -213,7 +215,9 @@ pub fn render(d: &PackData, cfg: &Config) -> String {
     // The diff draws from its own cap AND whatever pack budget remains, so no
     // single section can push the whole pack past max_pack_chars.
     out.push_str("<diff>\n");
-    let diff_cap = cfg.max_diff_chars.min(cfg.max_pack_chars.saturating_sub(out.len()));
+    let diff_cap = cfg
+        .max_diff_chars
+        .min(cfg.max_pack_chars.saturating_sub(out.len()));
     out.push_str(&budget_diff(&d.diff, diff_cap));
     out.push_str("\n</diff>\n\n");
 
@@ -242,7 +246,10 @@ pub fn render(d: &PackData, cfg: &Config) -> String {
     // Full file contents until the pack budget is spent. Which files make the
     // cut is risk-ranked — most-changed first, generated files last — while
     // render order stays path-sorted. Deterministic: depends only on sizes.
-    let include = select_for_budget(&d.changed_files, cfg.max_pack_chars.saturating_sub(out.len()));
+    let include = select_for_budget(
+        &d.changed_files,
+        cfg.max_pack_chars.saturating_sub(out.len()),
+    );
     let mut omitted: Vec<&str> = Vec::new();
     for f in &d.changed_files {
         if let Some(content) = &f.content {
@@ -263,8 +270,7 @@ pub fn render(d: &PackData, cfg: &Config) -> String {
     if !omitted.is_empty() {
         out.push_str(&format!(
             "<pack_note>Full contents of {} changed file(s) were omitted to fit the review \
-             context: {}. Their complete diffs appear above — judge them from the diff and \
-             say so if a finding needs the surrounding file to confirm.</pack_note>\n\n",
+             context: {}. Diffs above may also be budgeted. Request source during verification when surrounding code is needed.</pack_note>\n\n",
             omitted.len(),
             omitted.join(", ")
         ));
@@ -327,8 +333,15 @@ fn fit_within(s: &str, max_bytes: usize, note: &str) -> String {
 /// first to drop when budgets bite.
 pub fn is_generated(path: &str) -> bool {
     const LOCKFILES: [&str; 9] = [
-        "Cargo.lock", "package-lock.json", "yarn.lock", "pnpm-lock.yaml", "uv.lock",
-        "poetry.lock", "Gemfile.lock", "composer.lock", "go.sum",
+        "Cargo.lock",
+        "package-lock.json",
+        "yarn.lock",
+        "pnpm-lock.yaml",
+        "uv.lock",
+        "poetry.lock",
+        "Gemfile.lock",
+        "composer.lock",
+        "go.sum",
     ];
     let name = path.rsplit('/').next().unwrap_or(path);
     LOCKFILES.contains(&name)

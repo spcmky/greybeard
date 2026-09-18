@@ -9,34 +9,58 @@
 
 The mythical senior engineer who's seen every failure mode.
 
-Greybeard is a PR-review service: six specialist review lenses run in parallel over a
-pre-fetched context pack, every candidate finding is adversarially verified by an
-independent low-effort pass on the same strong model, and the survivors land as
-**one** PR comment that is updated in place on re-review. Target wall time: under 5 minutes (typically 2–3.5).
+Greybeard reviews pull requests and local Git changes. It groups changed files by
+subsystem, runs the relevant review lenses on bounded context, and verifies each
+candidate against current source before reporting it.
 
 ## How it works
 
-```
-Stage 0   context pack (one GraphQL query + diff + file contents, ~1-2s)
-          deterministic eligibility: closed / draft / already-reviewed-SHA → skip
-Stage 0b  cache warm (max_tokens:0 prefill) ∥ trivial-PR check (fast model)
-Stage 1   6 lenses in parallel (strong model, zero tools, pack is a cached prefix):
-            ci-config · claude-md · bugs · history(blame) · prior-feedback · code-comments
-Stage 2   per-finding adversarial verify (lens model at low effort, REFUTE-framed, 0-100 rubric)
-          — pipelined per lens, no barrier; banded gate (docs/GATE.md):
-            real && ≥80 → findings, real && ≥60 → collapsed Minor notes
-Stage 3   dedupe → render → upsert the single Greybeard comment (marker = state)
+1. Capture the diff, source, repository guidance, and available forge metadata.
+2. Group changed files by directory and size. Each discovery call has an 80 KB
+   context budget. Applicable lens instructions share one call per batch;
+   checks without relevant guidance or history are skipped.
+3. Verify each candidate against a separate, focused source context. The verifier
+   can request related repository files, including unchanged helpers and callers.
+   Remote reads are pinned to the reviewed commit. Local changed files are
+   captured at pack creation; unchanged files come from the captured HEAD.
+4. Check every source quotation and its line number against that snapshot.
+   Confirmation requires a concrete trigger, expected and actual behavior,
+   and an explanation of the relevant safeguards. The report retains this evidence.
+5. Publish supported findings. Severity is separate from evidentiary confidence:
+   verified nits go into Minor notes; incomplete evidence produces an explicitly
+   degraded review with no pass verdict.
+
+Verification is bounded to three model rounds, eight source files, and 80 KB of
+context. A missing dependency, unsupported quotation, or exhausted budget leaves
+that candidate unverified. Verification reads source; it does not execute project
+code or tests. Discovery remains bounded too, so a clean report is not proof of
+complete coverage. See [docs/GATE.md](docs/GATE.md).
+
+An opt-in evaluation uses the Reliquary metadata, SSH chunk-cache, LFU eviction,
+and test-context cases. It checks the correct implementations and corresponding
+broken variants against the configured local model:
+
+```sh
+GREYBEARD_PROVIDER=openai \
+GREYBEARD_OPENAI_BASE_URL=http://dgx-spark1.fiber.house:8000/v1 \
+GREYBEARD_LENS_MODEL=Qwen3-Coder-Next \
+  cargo test --test review_verification local_model_rejects_false_positives_and_detects_mutants -- --ignored --nocapture
 ```
 
-The context pack is rendered **byte-deterministically** — it is the shared
-prompt-cache prefix for every model call. Watch `cache_rd` in the telemetry table:
-zero on repeat calls means a nondeterminism bug crept into the pack renderer.
+Keep the model and sampling settings fixed when comparing workflow changes.
+For a reasoning model, `GREYBEARD_VERIFY_MAX_TOKENS` and
+`GREYBEARD_VERIFY_TIMEOUT_SECS` can raise the default 4000-token, 120-second
+verification budget. Invalid or zero values are rejected.
+The evaluation checks both false positives and detected defects; returning no
+findings is insufficient to pass it. Source quotations are checked mechanically,
+but a matching quotation does not prove the model's reasoning. Inspect the
+printed explanations as well as the verdicts.
 
 ## Setup
 
 **[docs/SETUP.md](docs/SETUP.md)** is the full guide. Two ways to run it:
 
-1. **Local review** — run the CLI (or `docker compose`) against a PR from your machine.
+1. **CLI review** — review a local Git working tree, or run the CLI against a PR/MR URL.
 2. **Automatic review** — a GitHub App + webhook service reviews every PR on open/update. Deploy it with the bundled [Helm chart](helm/greybeard) or [`docker-compose.yml`](docker-compose.yml).
 
 Runs against **GitHub** today; the forge is selected by `GREYBEARD_FORGE` and **GitLab** support is [in design](docs/GITLAB.md).
@@ -44,6 +68,8 @@ Runs against **GitHub** today; the forge is selected by `GREYBEARD_FORGE` and **
 ## Usage
 
 ```sh
+greybeard review [DIRECTORY] [--base REV] [--force]      # default directory: .
+greybeard pack   [DIRECTORY] [--base REV]              # local context, no credentials needed
 greybeard review https://github.com/OWNER/REPO/pull/N [--dry-run] [--force]
 greybeard pack   https://github.com/OWNER/REPO/pull/N     # print the pack, no model calls
 ```
@@ -51,6 +77,40 @@ greybeard pack   https://github.com/OWNER/REPO/pull/N     # print the pack, no m
 `--dry-run` prints the comment instead of posting. `--force` reviews even if the PR
 is closed / draft / already fully reviewed at this SHA / judged trivial. (A prior
 review that ended degraded/incomplete re-runs on the same SHA without `--force`.)
+
+### Local Git reviews
+
+With a [model provider configured](docs/SETUP.md#model-provider):
+
+```sh
+# Staged, unstaged, and non-ignored untracked changes compared with HEAD
+greybeard review /path/to/repo
+
+# Branch changes since the merge base with main, plus working-tree changes
+greybeard review /path/to/repo --base main
+
+# Inspect the local context without calling a model or requiring credentials
+greybeard pack /path/to/repo --base main
+
+# Run directly from this source checkout
+cargo run --release -- review /path/to/repo --base main
+```
+
+Local reviews always print to the terminal with `file:line` references; no PR,
+remote, forge credentials, or `--dry-run` is needed. The directory must be inside
+a Git working tree; a subdirectory selects the entire repository. Without
+`--base`, committed changes are excluded. With `--base`, Greybeard uses the merge
+base of that revision and HEAD; it does not fetch remote refs. New repositories
+with no commits can be reviewed without `--base`. Merge conflicts must be
+resolved first. An empty diff skips model calls.
+
+The context includes changed files, local blame when available, and tracked or
+non-ignored `CLAUDE.md`/`AGENTS.md` guidance. Live CI status and prior PR feedback
+are unavailable. Binary files, submodules, and files over 2 MB are listed with
+omission notes; ordinary context budgets still apply. Renames are represented
+as deletions and additions. Local reads leave the index and working tree intact.
+**Local describes the source:** code is sent to your configured model provider.
+Use a local model provider if the review must stay on your own machine/network.
 
 ### Examples
 
@@ -74,6 +134,12 @@ greybeard auth-check
 # Use Amazon Bedrock instead of the Anthropic API
 GREYBEARD_PROVIDER=bedrock \
 GREYBEARD_LENS_MODEL=us.anthropic.claude-opus-5 \
+  greybeard review https://github.com/acme/api/pull/482 --dry-run
+
+# Use the local Qwen server (no model API key needed)
+GREYBEARD_PROVIDER=openai \
+GREYBEARD_OPENAI_BASE_URL=http://dgx-spark1.fiber.house:8000/v1 \
+GREYBEARD_LENS_MODEL=Qwen3-Coder-Next \
   greybeard review https://github.com/acme/api/pull/482 --dry-run
 
 # No local toolchain? Run it straight from the Docker image
@@ -131,10 +197,13 @@ internet-facing ingress to `/webhook` + `/health`.
 | `GREYBEARD_FORGE` | code host: `github` or `gitlab` | `github` (GitLab is [in design](docs/GITLAB.md), not yet implemented) |
 | `GREYBEARD_TOKEN` | forge access token (`GITHUB_TOKEN` / `GH_TOKEN` still accepted) | falls back to `gh auth token` |
 | `GREYBEARD_FORGE_URL` | base URL for a self-hosted forge (GH Enterprise / self-managed GitLab) | the forge's public host |
-| `GREYBEARD_PROVIDER` | `anthropic` or `bedrock` | `anthropic` if `ANTHROPIC_API_KEY` set, else `bedrock` |
+| `GREYBEARD_PROVIDER` | `anthropic`, `bedrock`, or `openai` (OpenAI-compatible local server) | `anthropic` if `ANTHROPIC_API_KEY` set, else `bedrock` |
 | `ANTHROPIC_API_KEY` | Anthropic API key (provider=anthropic) | — |
-| `GREYBEARD_LENS_MODEL` | strong model for the 6 lenses | `claude-opus-5` (anthropic); **required** for bedrock, e.g. `us.anthropic.claude-opus-5` |
-| `GREYBEARD_VERIFY_MODEL` | model for eligibility + per-finding verification (runs at low effort) | the lens model — a weak verifier suppresses real findings |
+| `GREYBEARD_OPENAI_BASE_URL` | API root including `/v1`; **required** for openai | — |
+| `GREYBEARD_OPENAI_API_KEY` | optional bearer token for openai | unset (no auth header) |
+| `GREYBEARD_MODEL_MAX_CONCURRENT` | simultaneous model requests per review; positive integer | 1 for openai; unlimited for other providers |
+| `GREYBEARD_LENS_MODEL` | model for discovery lenses | `claude-opus-5` (anthropic); **required** for bedrock and openai |
+| `GREYBEARD_VERIFY_MODEL` | model for eligibility + source-backed verification | the lens model — a weak verifier suppresses real findings |
 | `AWS_REGION` / `AWS_DEFAULT_REGION` | Bedrock region | `us-east-2` |
 | `GITHUB_TOKEN` / `GH_TOKEN` | GitHub token — alias for `GREYBEARD_TOKEN` | falls back to `gh auth token` |
 | `GREYBEARD_APP_ID` + `GREYBEARD_APP_PRIVATE_KEY` (pem path) + `GREYBEARD_APP_INSTALLATION_ID` | GitHub App identity — when set it takes precedence and comments post as the app bot; in serve mode the webhook payload's installation ID overrides the env pin | unset (user token) |
@@ -148,6 +217,10 @@ Provider notes:
 - **bedrock**: legacy InvokeModel wire shape (SigV4, service `bedrock`);
   no server-side schema enforcement — JSON shape is enforced by prompt +
   parse-with-retry, and missing optional fields are defaulted rather than fatal.
+- **openai**: Chat Completions with schema-constrained JSON (`response_format`).
+  The server must support `json_schema` output. Anthropic cache controls and
+  effort settings are omitted; cache warming is skipped. Model requests default
+  to one at a time per review for local servers; see [local setup](docs/SETUP.md#local-model-openai-compatible).
 
 ## GitHub transport note
 

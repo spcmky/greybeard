@@ -4,10 +4,10 @@ Greybeard runs in two modes. Pick the one that matches how you want reviews to h
 
 | Mode | What it does | When to use |
 | --- | --- | --- |
-| **1. Local review** | You run the CLI against a specific PR from your machine. Posts (or dry-runs) one review comment. | Ad-hoc reviews, trying it out, reviewing a PR on demand, driving a local fix loop. |
+| **1. CLI review** | Review a local Git directory in the terminal, or a PR/MR URL with optional posting. | Uncommitted edits, branch reviews, ad-hoc PR reviews. |
 | **2. Automatic PR review** | A GitHub App + webhook service reviews every PR automatically on open and on each push. | Team-wide, hands-off review on every PR in a repo. |
 
-Both modes share the same pipeline and the same [model provider](#model-provider) and [GitHub App](#github-app-comments-post-as-the-bot) configuration — only the trigger differs.
+All reviews share the same pipeline and [model provider](#model-provider). Local directory reviews need Git but no forge credentials. URL and automatic reviews also need forge access; [GitHub App](#github-app-comments-post-as-the-bot) authentication is optional for CLI URL reviews.
 
 Greybeard supports both **GitHub** and **GitLab**, selected with `GREYBEARD_FORGE` (default `github`). The sections below are written for GitHub; for GitLab merge requests, read [GitLab](#gitlab) — the pipeline is identical, only the coordinates and webhook wiring differ.
 
@@ -27,13 +27,13 @@ Greybeard supports both **GitHub** and **GitLab**, selected with `GREYBEARD_FORG
 
 2. **A model provider** — see [Model provider](#model-provider) below.
 
-3. **Forge access** — GitHub (a user token for local mode, or a GitHub App for automatic mode), or GitLab (an access token); see [GitLab](#gitlab).
+3. **Git** on PATH for local directory reviews. For URL and automatic reviews, **forge access** — GitHub (a user token for local mode, or a GitHub App for automatic mode), or GitLab (an access token); see [GitLab](#gitlab).
 
 ---
 
 ## Model provider
 
-Greybeard talks to Claude either directly (Anthropic API) or through Amazon Bedrock. The provider is auto-detected: if `ANTHROPIC_API_KEY` is set it uses Anthropic, otherwise Bedrock. Force it with `GREYBEARD_PROVIDER=anthropic|bedrock`.
+Greybeard talks to Claude through Anthropic or Amazon Bedrock, and to local models through an OpenAI-compatible Chat Completions API. The provider is auto-detected: if `ANTHROPIC_API_KEY` is set it uses Anthropic, otherwise Bedrock. Select a provider explicitly with `GREYBEARD_PROVIDER=anthropic|bedrock|openai`.
 
 ### Anthropic (simplest)
 
@@ -55,11 +55,90 @@ export AWS_REGION=us-east-2          # default if unset
 
 See the full [configuration table](#configuration-reference) for model, threshold, and cost knobs.
 
+### Local model (OpenAI-compatible)
+
+The DGX Spark server runs Qwen3-Coder-Next:
+
+```sh
+export GREYBEARD_PROVIDER=openai
+export GREYBEARD_OPENAI_BASE_URL=http://dgx-spark1.fiber.house:8000/v1
+export GREYBEARD_LENS_MODEL=Qwen3-Coder-Next
+# Verification uses the same model unless GREYBEARD_VERIFY_MODEL is set.
+# This server needs no API key. For authenticated servers, optionally set:
+# export GREYBEARD_OPENAI_API_KEY=...
+export GREYBEARD_MODEL_MAX_CONCURRENT=1
+export GREYBEARD_MAX_CONCURRENT=1    # one review at a time in service mode
+```
+
+Both the URL (including `http://` or `https://` and `/v1`) and model are required.
+The server must support `response_format.type=json_schema`; this works with
+[llama.cpp's Chat Completions endpoint](https://github.com/ggml-org/llama.cpp/tree/master/tools/server#post-v1chatcompletions-openai-compatible-chat-completions-api).
+No Anthropic or AWS credentials are needed. Prompt caching is managed by the
+server: Greybeard skips the Anthropic prefill-only warmup and reports cached
+tokens when the server returns them.
+
+The DGX server has one inference slot. `GREYBEARD_MODEL_MAX_CONCURRENT=1`
+(the default for `openai`) queues requests in Greybeard before their HTTP
+timeouts begin. Increase it only when the model server has more capacity.
+Relevant lenses run over batches of related files. Serial generation can take longer than the
+hosted-provider review times quoted in the README.
+
+To save these settings, copy the exports into `greybeard.env` (git-ignored).
+Docker Compose reads this file automatically. For the native CLI, load it first:
+
+```sh
+set -a
+. ./greybeard.env
+set +a
+cargo run -- review https://github.com/OWNER/REPO/pull/N --dry-run
+```
+
+Forge authentication is required for PR/MR URLs, but not local directory reviews. To check just the model
+connection and all three review schemas, without forge access or posting:
+
+```sh
+cargo test --test openai_live -- --ignored --nocapture
+```
+
 ---
 
-## Mode 1 — Local review
+## Mode 1 — CLI review
 
-Review a single PR from your machine.
+### Review a local directory
+
+Configure a model provider above, then run:
+
+```sh
+# Current working tree: staged, unstaged, and non-ignored untracked files
+greybeard review /path/to/repo
+
+# Include branch commits since the merge base with main
+greybeard review /path/to/repo --base main
+
+# Inspect the pack without model configuration or credentials
+greybeard pack /path/to/repo --base main
+```
+
+Omit the path to use the current directory. The target must be in a Git working
+tree, and selecting a subdirectory reviews the whole repository. The default
+comparison is HEAD; `--base` uses a merge base, including local working-tree edits.
+Refs are resolved locally without fetching. New repositories work before their
+first commit when `--base` is omitted. Resolve merge conflicts before reviewing.
+
+Reports print locally with `file:line` coordinates, and never post to a forge.
+No remote or forge authentication is needed. `--dry-run` is accepted but redundant;
+`--force` overrides the trivial-change skip. An empty comparison skips without
+model setup. The index and working files are not modified.
+
+Tracked and non-ignored guidance files (`CLAUDE.md` and `AGENTS.md`) and local
+blame are included when available. Live CI and prior PR feedback are unavailable.
+Binary files, submodules, and files larger than 2 MB are marked as omitted;
+renames appear as deletion plus addition. Normal pack size limits also apply.
+The code is sent to the configured model provider, including hosted providers.
+
+### Review a PR/MR URL
+
+The following steps review a PR from your machine.
 
 ### 1. Authenticate to GitHub
 
@@ -91,6 +170,8 @@ Useful flags and subcommands:
 
 | Command | Purpose |
 | --- | --- |
+| `review [directory] [--base REV]` | Review local Git changes in the terminal. |
+| `pack [directory] [--base REV]` | Print local context without model calls or credentials. |
 | `review <pr-url> --dry-run` | Print the comment instead of posting. |
 | `review <pr-url> --force` | Review even if the PR is closed / draft / already reviewed at this SHA / judged trivial. |
 | `pack <pr-url>` | Print the context pack only — no model calls. For debugging/timing. |
@@ -301,9 +382,14 @@ Deliveries are deduped on `X-Gitlab-Event-UUID`; the debounce, concurrency cap, 
 | `GREYBEARD_FORGE` | code host: `github` or `gitlab` (see [GitLab](#gitlab)) | `github` |
 | `GREYBEARD_TOKEN` | forge access token — GitHub (`GITHUB_TOKEN` / `GH_TOKEN` accepted) or GitLab (`GITLAB_TOKEN` accepted; sent as `PRIVATE-TOKEN`) | GitHub falls back to `gh auth token` |
 | `GREYBEARD_FORGE_URL` | base URL for a self-hosted forge (GH Enterprise / self-managed GitLab) | the forge's public host |
-| `GREYBEARD_PROVIDER` | `anthropic` or `bedrock` | `anthropic` if `ANTHROPIC_API_KEY` set, else `bedrock` |
+| `GREYBEARD_PROVIDER` | `anthropic`, `bedrock`, or `openai` (OpenAI-compatible local server) | `anthropic` if `ANTHROPIC_API_KEY` set, else `bedrock` |
 | `ANTHROPIC_API_KEY` | Anthropic API key (provider=anthropic) | — |
-| `GREYBEARD_LENS_MODEL` | strong model for the 6 lenses | `claude-opus-5` (anthropic); **required** for bedrock, e.g. `us.anthropic.claude-opus-5` |
+| `GREYBEARD_OPENAI_BASE_URL` | API root including `/v1`; **required** for openai | — |
+| `GREYBEARD_OPENAI_API_KEY` | optional bearer token for openai | unset (no auth header) |
+| `GREYBEARD_MODEL_MAX_CONCURRENT` | simultaneous model requests per review; positive integer | 1 for openai; unlimited for other providers |
+| `GREYBEARD_LENS_MODEL` | strong model for the 6 lenses | `claude-opus-5` (anthropic); **required** for bedrock and openai |
+| `GREYBEARD_VERIFY_MAX_TOKENS` | output budget for verification, including reasoning where the provider counts it | `4000` |
+| `GREYBEARD_VERIFY_TIMEOUT_SECS` | timeout after the verification request starts, in seconds | `120` |
 | `GREYBEARD_VERIFY_MODEL` | model for eligibility + per-finding verification (runs at low effort) | the lens model — a weak verifier suppresses real findings |
 | `AWS_REGION` / `AWS_DEFAULT_REGION` | Bedrock region | `us-east-2` |
 | `GITHUB_TOKEN` / `GH_TOKEN` | GitHub token — alias for `GREYBEARD_TOKEN` | falls back to `gh auth token` |
@@ -314,3 +400,24 @@ Deliveries are deduped on `X-Gitlab-Event-UUID`; the debounce, concurrency cap, 
 | `GREYBEARD_REVIEW_BOT_PRS` | review PRs authored by bots (dependabot etc.) | `false` |
 | `GREYBEARD_LOG_FILE` | pod-local JSONL run log | `greybeard-runs.jsonl` |
 | `GREYBEARD_PRICE_IN` / `_OUT` / `_CACHE_READ` / `_CACHE_WRITE` | $ per million tokens for cost telemetry — all four required, tokens are reported regardless | unset (cost omitted) |
+
+## Review verification
+
+Discovery now runs in directory/size batches. The verifier receives focused
+current source and can request additional repository files. Greybeard checks its
+quotes and requires a concrete failure case before reporting a finding. Missing
+evidence is shown as degraded verification. See [GATE.md](GATE.md).
+
+The live regression evaluation is separate from normal `cargo test` because it
+requires a configured local model and consumes inference time:
+
+```sh
+cargo test --test review_verification local_model_rejects_false_positives_and_detects_mutants -- --ignored --nocapture
+```
+
+Set `GREYBEARD_PROVIDER=openai`, `GREYBEARD_OPENAI_BASE_URL`, and
+`GREYBEARD_LENS_MODEL` as for a local review. The client inherits server sampling
+parameters. For Qwen3-Coder-Next, record those effective settings when comparing
+runs; Unsloth's GGUF guide currently recommends temperature 1.0, top-p 0.95,
+top-k 40, min-p 0.01, and repetition penalty 1.0:
+<https://unsloth.ai/docs/models/qwen3-coder-next>.
