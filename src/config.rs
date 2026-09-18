@@ -7,10 +7,9 @@ pub enum Provider {
     OpenAi,
 }
 
-/// The code-host ("forge") a review runs against. GitHub is the only backend
-/// implemented today; GitLab is specified in docs/GITLAB.md and dispatched
-/// from src/forge.rs. This exists so config, docs, and the connect seam are
-/// forge-neutral ahead of that backend landing.
+/// The code-host ("forge") a review runs against. Both backends are
+/// implemented and dispatched from src/forge.rs; GitHub is the default. See
+/// docs/GITLAB.md for the GitLab design.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Forge {
     GitHub,
