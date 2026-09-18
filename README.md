@@ -295,12 +295,18 @@ Claude Code fix→push→re-review loop off it until the verdict is clean.
 
 ## Roadmap
 
-Shipped: CLI + service (1.0.0), marker v2 machine contract + `greybeard-loop`
-fix-loop skill (1.1.0), ops & reliability — run events, /metrics, degraded
-health, panic-safe accounting (1.2.0), and a **GitLab backend** (REST v4, MR
-reviews in both CLI and serve mode; blame + prior-comment context and a
-first-class bot-actor type are the tracked v1 follow-ups). Currently in an
-observation period on real traffic across the installed repos.
+**Released** — [`v1.2.0`](https://github.com/spcmky/greybeard/releases/latest)
+is the only tagged release: the CLI + webhook service, the marker v2 machine
+contract with the `greybeard-loop` fix-loop skill, the ops & reliability layer
+(run events, `/metrics`, degraded health, panic-safe accounting), and the setup
+docs, `docker-compose.yml`, and Helm chart.
+
+**On `main`, not yet released** — the **GitLab backend** (REST v4, MR reviews in
+both CLI and serve mode; blame + prior-comment context and a first-class
+bot-actor type are the tracked follow-ups), local working-tree reviews with
+source-backed finding verification, review-integrity hardening, and the
+env-tunable `GREYBEARD_CONFIDENCE_THRESHOLD`. Currently in an observation period
+on real traffic across the installed repos.
 
 Next, informed by that data:
 - **Trust & learning** — feedback harvesting (reactions + a `wrong:` reply
