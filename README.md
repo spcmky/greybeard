@@ -295,12 +295,13 @@ Claude Code fix→push→re-review loop off it until the verdict is clean.
 
 ## Roadmap
 
+Released:
+
 **v1.3.0** — the **GitLab backend** (REST v4, MR reviews in both CLI and serve
-mode; blame + prior-comment context and a first-class bot-actor type are the
-tracked follow-ups), local working-tree reviews with source-backed finding
+mode; blame + prior-comment context and a first-class bot-actor type are known
+gaps for a follow-up), local working-tree reviews with source-backed finding
 verification, review-integrity hardening, and the env-tunable
-`GREYBEARD_CONFIDENCE_THRESHOLD`. Currently in an observation period on real
-traffic across the installed repos.
+`GREYBEARD_CONFIDENCE_THRESHOLD`.
 
 **v1.2.0** — the CLI + webhook service, the marker v2 machine contract with the
 `greybeard-loop` fix-loop skill, the ops & reliability layer (run events,
