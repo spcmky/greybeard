@@ -142,7 +142,7 @@ impl Config {
                      (a Bedrock inference-profile ID, e.g. us.anthropic.claude-...)"
                 ),
                 _ => bail!(
-                    "GREYBEARD_LENS_MODEL is required (e.g. Qwen3-Coder-Next for provider=openai)"
+                    "GREYBEARD_LENS_MODEL is required (e.g. qwen3-coder-next for provider=openai)"
                 ),
             }
         }
@@ -200,6 +200,15 @@ impl Config {
                 .and_then(|v| v.parse().ok())
                 .unwrap_or(50),
             mention_cooldown_secs: 600,
+            // Env-tunable so a weaker (e.g. local) verifier's confidence
+            // distribution can be re-calibrated without a rebuild: it clusters
+            // its self-scored confidence differently from the strong-model
+            // default of 80, and verify.rs demotes anything below this to
+            // Unverified rather than posting it.
+            confidence_threshold: env_u8_capped(
+                "GREYBEARD_CONFIDENCE_THRESHOLD",
+                defaults.confidence_threshold,
+            )?,
             verify_max_tokens: env_positive(
                 "GREYBEARD_VERIFY_MAX_TOKENS",
                 defaults.verify_max_tokens,
@@ -257,6 +266,26 @@ fn env_positive(name: &str, default: u32) -> Result<u32> {
     Ok(value)
 }
 
+/// Read a 0-100 threshold env var, falling back to `default` when unset. Unlike
+/// [`env_positive`], 0 is legal (post everything the verifier confirms) and
+/// values above 100 are rejected so a typo like `800` fails loudly instead of
+/// silently disabling the gate.
+pub fn env_u8_capped(name: &str, default: u8) -> Result<u8> {
+    let raw = match std::env::var(name) {
+        Ok(raw) => raw,
+        Err(std::env::VarError::NotPresent) => return Ok(default),
+        Err(error) => return Err(error).with_context(|| format!("reading {name}")),
+    };
+    let value: u8 = raw
+        .trim()
+        .parse()
+        .with_context(|| format!("{name} must be an integer 0-100"))?;
+    if value > 100 {
+        bail!("{name} must be 0-100, got {value}");
+    }
+    Ok(value)
+}
+
 fn parse_openai_base_url(raw: &str) -> Result<String> {
     let base = raw.trim().trim_end_matches('/');
     let url = reqwest::Url::parse(base).context("invalid GREYBEARD_OPENAI_BASE_URL")?;
@@ -275,7 +304,27 @@ fn parse_openai_base_url(raw: &str) -> Result<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::parse_openai_base_url;
+    use super::{env_u8_capped, parse_openai_base_url};
+
+    #[test]
+    fn confidence_threshold_env_defaults_clamps_and_rejects() {
+        // A test-unique key so the process-global env is not shared with other
+        // parallel tests.
+        let key = "GREYBEARD_TEST_CONFIDENCE_THRESHOLD";
+        std::env::remove_var(key);
+        assert_eq!(env_u8_capped(key, 80).unwrap(), 80); // unset → default
+        std::env::set_var(key, "55");
+        assert_eq!(env_u8_capped(key, 80).unwrap(), 55);
+        std::env::set_var(key, " 0 "); // 0 is legal (post everything), trimmed
+        assert_eq!(env_u8_capped(key, 80).unwrap(), 0);
+        std::env::set_var(key, "100");
+        assert_eq!(env_u8_capped(key, 80).unwrap(), 100);
+        std::env::set_var(key, "101"); // >100 fails loudly
+        assert!(env_u8_capped(key, 80).is_err());
+        std::env::set_var(key, "high"); // non-numeric fails loudly
+        assert!(env_u8_capped(key, 80).is_err());
+        std::env::remove_var(key);
+    }
 
     #[test]
     fn openai_base_url_normalizes_and_validates() {

@@ -57,12 +57,12 @@ See the full [configuration table](#configuration-reference) for model, threshol
 
 ### Local model (OpenAI-compatible)
 
-The DGX Spark server runs Qwen3-Coder-Next:
+The DGX Spark server runs qwen3-coder-next:
 
 ```sh
 export GREYBEARD_PROVIDER=openai
 export GREYBEARD_OPENAI_BASE_URL=http://dgx-spark1.fiber.house:8000/v1
-export GREYBEARD_LENS_MODEL=Qwen3-Coder-Next
+export GREYBEARD_LENS_MODEL=qwen3-coder-next
 # Verification uses the same model unless GREYBEARD_VERIFY_MODEL is set.
 # This server needs no API key. For authenticated servers, optionally set:
 # export GREYBEARD_OPENAI_API_KEY=...
@@ -417,7 +417,7 @@ cargo test --test review_verification local_model_rejects_false_positives_and_de
 
 Set `GREYBEARD_PROVIDER=openai`, `GREYBEARD_OPENAI_BASE_URL`, and
 `GREYBEARD_LENS_MODEL` as for a local review. The client inherits server sampling
-parameters. For Qwen3-Coder-Next, record those effective settings when comparing
+parameters. For qwen3-coder-next, record those effective settings when comparing
 runs; Unsloth's GGUF guide currently recommends temperature 1.0, top-p 0.95,
 top-k 40, min-p 0.01, and repetition penalty 1.0:
 <https://unsloth.ai/docs/models/qwen3-coder-next>.

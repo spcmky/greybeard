@@ -8,9 +8,10 @@ It has no execution tool and must not claim to have run tests.
 Every verdict has one of three outcomes:
 
 - `confirmed`: current-source citations support a reachable failure or explicit
-  rule violation, with confidence of at least 80.
-- `refuted`: current-source citations contradict the claim, with confidence of
-  at least 80.
+  rule violation, with confidence at or above the configured threshold
+  (`GREYBEARD_CONFIDENCE_THRESHOLD`, default 80).
+- `refuted`: current-source citations contradict the claim, with confidence at
+  or above that same threshold.
 - `unverified`: evidence is missing or insufficient. This degrades the report
   and suppresses the final pass/fail verdict.
 
@@ -29,8 +30,11 @@ A removed line cannot be evidence of current behavior. Confirmation also require
 a trigger, expected and actual behavior, and an explanation of why existing
 safeguards do not prevent the failure. These fields appear in the report.
 
-A failed citation check is returned to the verifier for correction. Low confidence
-produces an unverified result immediately; it is never retried to raise the score. Verification
+A failed citation check is returned to the verifier for correction. Confidence
+below `GREYBEARD_CONFIDENCE_THRESHOLD` (default 80) produces an unverified result
+immediately; it is never retried to raise the score. Lower the threshold to
+re-calibrate a weaker or local verifier, whose self-scored confidence clusters
+differently from the strong-model default. Verification
 has at most three rounds, eight source files, and 80 KB of source context. Missing
 files, exhausted budgets, model failures, and unsupported final verdicts remain
 unverified. Matching quotations establish source provenance; they do not prove
