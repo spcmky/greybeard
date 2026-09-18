@@ -10,6 +10,9 @@ use serde_json::{json, Value};
 use crate::config::{Config, Provider};
 use crate::telemetry::Telemetry;
 
+#[cfg(test)]
+mod tests;
+
 const ANTHROPIC_URL: &str = "https://api.anthropic.com/v1/messages";
 const ANTHROPIC_VERSION: &str = "2023-06-01";
 
@@ -39,7 +42,9 @@ pub struct Llm {
     http: reqwest::Client,
     cfg: Config,
     anthropic_key: Option<String>,
+    openai_key: Option<String>,
     aws_creds: Option<aws_credential_types::provider::SharedCredentialsProvider>,
+    model_slots: Option<tokio::sync::Semaphore>,
     telemetry: Telemetry,
 }
 
@@ -61,13 +66,23 @@ impl Llm {
                     .ok_or_else(|| anyhow!("no AWS credentials resolved for provider=bedrock"))?;
                 (None, Some(provider))
             }
+            Provider::OpenAi => (None, None),
+        };
+        let openai_key = if cfg.provider == Provider::OpenAi {
+            std::env::var("GREYBEARD_OPENAI_API_KEY")
+                .ok()
+                .filter(|key| !key.is_empty())
+        } else {
+            None
         };
         Ok(Self {
             http: reqwest::Client::builder()
                 .timeout(Duration::from_secs(cfg.lens_timeout_secs + 30))
                 .build()?,
+            model_slots: cfg.model_max_concurrent.map(tokio::sync::Semaphore::new),
             cfg,
             anthropic_key,
+            openai_key,
             aws_creds,
             telemetry,
         })
@@ -118,6 +133,11 @@ impl Llm {
     /// prompt cache and returns immediately. Best-effort — failures are logged
     /// and ignored (the first real call then pays the cache write instead).
     pub async fn warm(&self, tier: Tier, system_blocks: &[Value]) {
+        // Chat Completions has no portable prefill-only request. Let the first
+        // real call populate the server's prompt cache instead.
+        if self.cfg.provider == Provider::OpenAi {
+            return;
+        }
         let messages = vec![json!({"role": "user", "content": "warmup"})];
         let body = self.build_body(tier, system_blocks, &messages, 0, None);
         if let Err(e) = self.post(tier, "cache-warm", body).await {
@@ -133,6 +153,28 @@ impl Llm {
         max_tokens: u32,
         schema: Option<&Value>,
     ) -> Value {
+        if self.cfg.provider == Provider::OpenAi {
+            let system = system_blocks
+                .iter()
+                .filter_map(|block| block["text"].as_str())
+                .collect::<Vec<_>>()
+                .join("\n\n");
+            let mut chat_messages = vec![json!({"role": "system", "content": system})];
+            chat_messages.extend_from_slice(messages);
+            let mut body = json!({
+                "model": self.model(tier),
+                "messages": chat_messages,
+                "max_tokens": max_tokens,
+                "stream": false,
+            });
+            if let Some(schema) = schema {
+                body["response_format"] = json!({
+                    "type": "json_schema",
+                    "json_schema": {"name": "greybeard", "schema": schema},
+                });
+            }
+            return body;
+        }
         let mut body = json!({
             "max_tokens": max_tokens,
             "system": system_blocks,
@@ -166,6 +208,7 @@ impl Llm {
                 // JSON shape is enforced by prompt + parse-retry instead.
                 body["anthropic_version"] = json!("bedrock-2023-05-31");
             }
+            Provider::OpenAi => unreachable!(),
         }
         body
     }
@@ -179,7 +222,10 @@ impl Llm {
         loop {
             match self.post_once(tier, label, body.clone()).await {
                 Err(e) if attempt < BACKOFF_SECS.len() && is_retryable(&e) => {
-                    eprintln!("greybeard: {label}: retryable ({e}); backing off {}s", BACKOFF_SECS[attempt]);
+                    eprintln!(
+                        "greybeard: {label}: retryable ({e}); backing off {}s",
+                        BACKOFF_SECS[attempt]
+                    );
                     tokio::time::sleep(Duration::from_secs(BACKOFF_SECS[attempt])).await;
                     attempt += 1;
                 }
@@ -189,6 +235,12 @@ impl Llm {
     }
 
     async fn post_once(&self, tier: Tier, label: &str, body: Value) -> Result<String> {
+        // Wait before starting the HTTP timeout: a one-slot local server must
+        // not time out later lenses while earlier ones are still generating.
+        let _permit = match &self.model_slots {
+            Some(slots) => Some(slots.acquire().await?),
+            None => None,
+        };
         let started = Instant::now();
         let timeout = Duration::from_secs(match tier {
             Tier::Lens => self.cfg.lens_timeout_secs,
@@ -207,19 +259,32 @@ impl Llm {
                     .await
                     .with_context(|| format!("{label}: request failed"))?;
                 let status = r.status();
-                let v: Value = r.json().await.with_context(|| format!("{label}: bad response body"))?;
+                let v: Value = r
+                    .json()
+                    .await
+                    .with_context(|| format!("{label}: bad response body"))?;
                 if !status.is_success() {
-                    bail!("{label}: API error {status}: {}", v["error"]["message"].as_str().unwrap_or("?"));
+                    bail!(
+                        "{label}: API error {status}: {}",
+                        v["error"]["message"].as_str().unwrap_or("?")
+                    );
                 }
                 v
             }
             Provider::Bedrock => self.post_bedrock(tier, label, &body, timeout).await?,
+            Provider::OpenAi => self.post_openai(label, &body, timeout).await?,
         };
 
-        let usage: Usage = serde_json::from_value(resp["usage"].clone()).unwrap_or_default();
-        self.telemetry
-            .record(label, started.elapsed(), &usage);
+        let usage: Usage = if self.cfg.provider == Provider::OpenAi {
+            openai_usage(&resp)
+        } else {
+            serde_json::from_value(resp["usage"].clone()).unwrap_or_default()
+        };
+        self.telemetry.record(label, started.elapsed(), &usage);
 
+        if self.cfg.provider == Provider::OpenAi {
+            return openai_text(label, &resp);
+        }
         if resp["stop_reason"] == "refusal" {
             bail!("{label}: model refused (stop_reason=refusal)");
         }
@@ -235,6 +300,40 @@ impl Llm {
             })
             .unwrap_or_default();
         Ok(text)
+    }
+
+    async fn post_openai(&self, label: &str, body: &Value, timeout: Duration) -> Result<Value> {
+        let base = self
+            .cfg
+            .openai_base_url
+            .as_deref()
+            .context("provider=openai requires GREYBEARD_OPENAI_BASE_URL")?;
+        let mut req = self
+            .http
+            .post(format!("{base}/chat/completions"))
+            .timeout(timeout)
+            .json(body);
+        if let Some(key) = &self.openai_key {
+            req = req.bearer_auth(key);
+        }
+        let response = req
+            .send()
+            .await
+            .with_context(|| format!("{label}: openai request failed"))?;
+        let status = response.status();
+        // Keep the HTTP status even when a proxy returns a plain-text error,
+        // so transient failures still go through the shared retry path.
+        if !status.is_success() {
+            let text = response.text().await.unwrap_or_default();
+            bail!(
+                "{label}: openai error {status}: {}",
+                text.chars().take(512).collect::<String>()
+            );
+        }
+        response
+            .json()
+            .await
+            .with_context(|| format!("{label}: bad openai response body"))
     }
 
     async fn post_bedrock(
@@ -269,7 +368,10 @@ impl Llm {
             .settings(SigningSettings::default())
             .build()
             .map_err(|e| anyhow!("sigv4 params: {e}"))?;
-        let headers = [("content-type", "application/json"), ("accept", "application/json")];
+        let headers = [
+            ("content-type", "application/json"),
+            ("accept", "application/json"),
+        ];
         let signable = SignableRequest::new(
             "POST",
             &url,
@@ -293,29 +395,84 @@ impl Llm {
         for (name, value) in http_req.headers() {
             req = req.header(name, value);
         }
-        let r = req.send().await.with_context(|| format!("{label}: bedrock request failed"))?;
+        let r = req
+            .send()
+            .await
+            .with_context(|| format!("{label}: bedrock request failed"))?;
         let status = r.status();
-        let v: Value = r.json().await.with_context(|| format!("{label}: bad bedrock body"))?;
+        let v: Value = r
+            .json()
+            .await
+            .with_context(|| format!("{label}: bad bedrock body"))?;
         if !status.is_success() {
-            bail!("{label}: bedrock error {status}: {}", v["message"].as_str().unwrap_or("?"));
+            bail!(
+                "{label}: bedrock error {status}: {}",
+                v["message"].as_str().unwrap_or("?")
+            );
         }
         Ok(v)
     }
 }
 
+fn openai_usage(resp: &Value) -> Usage {
+    let usage = &resp["usage"];
+    let total_input = usage["prompt_tokens"].as_u64().unwrap_or_default();
+    let cached = usage["prompt_tokens_details"]["cached_tokens"]
+        .as_u64()
+        .unwrap_or_default()
+        .min(total_input);
+    Usage {
+        // Our telemetry treats cache reads and uncached input as disjoint.
+        input_tokens: total_input - cached,
+        output_tokens: usage["completion_tokens"].as_u64().unwrap_or_default(),
+        cache_read_input_tokens: cached,
+        cache_creation_input_tokens: 0,
+    }
+}
+
+fn openai_text(label: &str, resp: &Value) -> Result<String> {
+    let choice = &resp["choices"][0];
+    if choice["finish_reason"] == "content_filter"
+        || choice["message"]["refusal"]
+            .as_str()
+            .is_some_and(|s| !s.is_empty())
+    {
+        bail!("{label}: model refused");
+    }
+    if choice["finish_reason"] == "length" {
+        bail!("{label}: model output truncated (finish_reason=length)");
+    }
+    choice["message"]["content"]
+        .as_str()
+        .filter(|text| !text.trim().is_empty())
+        .map(str::to_owned)
+        .with_context(|| format!("{label}: openai response has no assistant text"))
+}
+
 /// Throttle / transient-server errors carry their HTTP status in the message.
 fn is_retryable(e: &anyhow::Error) -> bool {
     let msg = e.to_string();
-    ["429", "529", "500", "502", "503", "throttl", "Throttl", "overloaded"]
-        .iter()
-        .any(|m| msg.contains(m))
+    [
+        "429",
+        "529",
+        "500",
+        "502",
+        "503",
+        "throttl",
+        "Throttl",
+        "overloaded",
+    ]
+    .iter()
+    .any(|m| msg.contains(m))
 }
 
 /// Extract and parse the first JSON object from model text output —
 /// tolerates code fences and surrounding prose.
 pub fn parse_json_object<T: DeserializeOwned>(text: &str) -> Result<T> {
     let start = text.find('{').ok_or_else(|| anyhow!("no '{{' in output"))?;
-    let end = text.rfind('}').ok_or_else(|| anyhow!("no '}}' in output"))?;
+    let end = text
+        .rfind('}')
+        .ok_or_else(|| anyhow!("no '}}' in output"))?;
     if end < start {
         bail!("malformed JSON bounds");
     }

@@ -9,6 +9,10 @@ use crate::forge::Forge;
 use crate::pack::ContextPack;
 
 impl Forge for Github {
+    async fn file_contents(&self, pr: &PrRef, path: &str, sha: &str) -> Result<Option<String>> {
+        self.file_contents(pr, path, sha).await
+    }
+
     fn auth_mode(&self) -> &'static str {
         self.auth_mode
     }

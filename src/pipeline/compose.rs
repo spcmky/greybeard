@@ -91,12 +91,14 @@ pub fn render_comment(
 ) -> String {
     let short_sha = &head_sha[..head_sha.len().min(7)];
     let mut out = String::from("## Greybeard review\n\n");
+    let degraded = unverified > 0 || lenses_failed > 0;
 
     if confirmed.is_empty() && minor.is_empty() {
-        out.push_str(
-            "No issues found. Checked CI/config changes, CLAUDE.md compliance, bugs in the \
-             changed code, file history, prior review feedback, and in-code guidance.\n",
-        );
+        out.push_str(if degraded {
+            "Review incomplete. No findings were confirmed.\n"
+        } else {
+            "No issues found in the available review context.\n"
+        });
     } else if confirmed.is_empty() {
         out.push_str("No blocking issues found — minor notes below.\n");
     } else {
@@ -112,7 +114,14 @@ pub fn render_comment(
                 c.finding.severity,
                 c.finding.claim.trim_end_matches('.'),
                 c.finding.evidence.replace('\n', " "),
-                crate::pack::permalink(forge, base_url, pr, head_sha, &c.finding.file, c.finding.line),
+                crate::pack::permalink(
+                    forge,
+                    base_url,
+                    pr,
+                    head_sha,
+                    &c.finding.file,
+                    c.finding.line
+                ),
             ));
         }
     }
@@ -126,14 +135,22 @@ pub fn render_comment(
         ));
         for c in sorted.iter().take(MAX_MINOR_SHOWN) {
             out.push_str(&format!(
-                "- **[{}]** {} — [{}]({})\n",
+                "- **[{}]** {}: [{}]({})\n  {}\n",
                 c.finding.severity,
                 c.finding.claim.trim_end_matches('.'),
                 match c.finding.line {
                     Some(l) => format!("{}:{}", c.finding.file, l),
                     None => c.finding.file.clone(),
                 },
-                crate::pack::permalink(forge, base_url, pr, head_sha, &c.finding.file, c.finding.line),
+                crate::pack::permalink(
+                    forge,
+                    base_url,
+                    pr,
+                    head_sha,
+                    &c.finding.file,
+                    c.finding.line
+                ),
+                c.finding.evidence.replace('\n', " "),
             ));
         }
         if minor.len() > MAX_MINOR_SHOWN {
@@ -150,7 +167,6 @@ pub fn render_comment(
     // ways to degrade: a lens that never produced findings (find stage failed →
     // incomplete coverage), or a dead verifier (verify stage failed → findings
     // dropped). Either one suppresses the verdict.
-    let degraded = unverified > 0 || lenses_failed > 0;
     if lenses_failed > 0 {
         out.push_str(&format!(
             "\n**Coverage incomplete:** {lenses_failed} of {lenses_run} review lens{} failed to \
@@ -203,5 +219,69 @@ pub fn render_comment(
         minor.len(),
         comment::render_marker_v2(head_sha, verdict, marker_findings),
     ));
+    out
+}
+
+/// Terminal report: working-tree coordinates, without remote links or PR markers.
+pub fn render_local(
+    local: &crate::local::LocalReview,
+    report: &super::review::ReviewReport,
+) -> String {
+    let mut out = format!(
+        "## Greybeard local review\n\nRepository: {}\nComparison: {}\n\n",
+        local.root.display(),
+        local.comparison
+    );
+    if report.confirmed.is_empty() && report.minor.is_empty() {
+        out.push_str(
+            if report.summary.unverified > 0 || report.summary.lenses_failed > 0 {
+                "Review incomplete. No findings were confirmed.\n"
+            } else {
+                "No issues found in the available local context.\n"
+            },
+        );
+    }
+    for (heading, findings) in [
+        ("Findings", &report.confirmed),
+        ("Minor notes", &report.minor),
+    ] {
+        if findings.is_empty() {
+            continue;
+        }
+        out.push_str(&format!("\n### {heading}\n\n"));
+        for c in findings {
+            let location = match c.finding.line {
+                Some(line) => format!("{}:{line}", c.finding.file),
+                None => c.finding.file.clone(),
+            };
+            out.push_str(&format!(
+                "- **[{}] {}** — {}\n  {}\n",
+                c.finding.severity,
+                location,
+                c.finding.claim.trim_end_matches('.'),
+                c.finding.evidence.replace('\n', " ")
+            ));
+        }
+    }
+    let summary = &report.summary;
+    if summary.lenses_failed > 0 {
+        out.push_str(&format!(
+            "\n**Coverage incomplete:** {} review lenses failed.\n",
+            summary.lenses_failed
+        ));
+    }
+    if summary.unverified > 0 {
+        out.push_str(&format!(
+            "\n**Verification degraded:** {} candidate findings could not be verified.\n",
+            summary.unverified
+        ));
+    }
+    if summary.lenses_failed == 0 && summary.unverified == 0 {
+        out.push_str(&format!(
+            "\n_{}_\n",
+            verdict_line(&report.confirmed, &report.minor)
+        ));
+    }
+    out.push_str("\nLocal context only; live CI status and prior PR feedback were unavailable.\n");
     out
 }

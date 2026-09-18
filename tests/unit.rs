@@ -212,12 +212,13 @@ fn minor_notes_render_collapsed_with_crack_verdict() {
     let minor = vec![Confirmed {
         finding: finding("src/a.rs", Some(9), "nit"),
         lens: "code-comments".into(),
-        confidence: 65,
+        confidence: 95,
     }];
     let body = render_comment(greybeard::config::Forge::GitHub, None, &pr(), sha, &[], &minor, 2, 6, 0, 0);
     assert!(body.contains("No blocking issues found"));
     assert!(body.contains("<details>"));
     assert!(body.contains("Minor notes (1)"));
+    assert!(body.contains("evidence"));
     assert!(body.contains(&format!("blob/{sha}/src/a.rs#L8-L10")));
     assert!(body.contains("_Pass — but mind the cracks in the bridge._"));
     assert!(body.contains("0 confirmed, 1 minor"));
@@ -246,6 +247,7 @@ fn degraded_run_suppresses_verdict_and_warns() {
     let body = render_comment(greybeard::config::Forge::GitHub, None, &pr(), sha, &[], &[], 5, 6, 3, 0);
     assert!(body.contains("Verification degraded"));
     assert!(body.contains("3 candidate findings"));
+    assert!(body.contains("Review incomplete. No findings were confirmed."));
     assert!(!body.contains("You shall pass"), "no verdict line while degraded");
 }
 
@@ -314,11 +316,12 @@ fn test_config(max_pack_chars: usize) -> greybeard::config::Config {
         forge: Forge::GitHub,
         forge_base_url: None,
         provider: Provider::Anthropic,
+        openai_base_url: None,
+        model_max_concurrent: None,
         lens_model: "m".into(),
         verify_model: "m".into(),
         aws_region: "us-east-2".into(),
         confidence_threshold: 80,
-        minor_threshold: 60,
         lens_timeout_secs: 240,
         verify_timeout_secs: 120,
         lens_max_tokens: 16_000,
@@ -516,6 +519,7 @@ fn run_event_shape_and_single_line() {
         candidates: 5,
         unverified: 0,
         lenses_failed: 1,
+        lenses_run: 6,
         duration: std::time::Duration::from_secs(90),
         usage: Usage { input_tokens: 7, output_tokens: 8, cache_creation_input_tokens: 9, cache_read_input_tokens: 10 },
     };

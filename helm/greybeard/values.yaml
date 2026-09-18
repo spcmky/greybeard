@@ -19,12 +19,19 @@ env:
   GREYBEARD_LENS_MODEL: claude-opus-5
   # GREYBEARD_PROVIDER: bedrock
   # AWS_REGION: us-east-2
+  # Local Qwen: replace GREYBEARD_LENS_MODEL above with Qwen3-Coder-Next, then:
+  # GREYBEARD_PROVIDER: openai
+  # GREYBEARD_OPENAI_BASE_URL: http://dgx-spark1.fiber.house:8000/v1
+  # GREYBEARD_MODEL_MAX_CONCURRENT: "1"
+  # GREYBEARD_MAX_CONCURRENT: "1"
 
 # Name of a pre-created Secret whose keys are injected as environment variables
 # (via envFrom). It MUST contain:
 #   - GREYBEARD_WEBHOOK_SECRET        (required for serve)
 #   - ANTHROPIC_API_KEY              (provider=anthropic)  OR the AWS creds your
 #                                     node role / IRSA doesn't already provide
+#   - GREYBEARD_OPENAI_API_KEY       only if provider=openai needs authentication
+#                                     (the local DGX server needs no model key)
 # Create it out of band, e.g.:
 #   kubectl create secret generic greybeard-secrets \
 #     --from-literal=GREYBEARD_WEBHOOK_SECRET=... \
