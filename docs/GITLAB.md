@@ -1,10 +1,11 @@
-# GitLab support — design
+# GitLab support
 
-Status: **design / not implemented.** GitHub is the only working backend today.
-This document specifies what a GitLab backend needs and how the code gets there.
-The groundwork already in the tree (a forge-neutral config surface and a single
-`connect` dispatch point in `src/forge.rs`) exists so this can land without
-churning the GitHub path.
+Status: **implemented.** GitLab is a working backend in both CLI and service
+mode, selected by `GREYBEARD_FORGE=gitlab`. GitHub remains the default and is
+unaffected. This document records the design: what the GitLab backend needs and
+how the code is structured. The forge-neutral config surface and the single
+`connect` dispatch point in `src/forge.rs` let it land without churning the
+GitHub path.
 
 ## Goal
 

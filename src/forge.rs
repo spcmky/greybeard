@@ -2,14 +2,13 @@
 //!
 //! Every path that needs a code-host client goes through here instead of
 //! constructing `github::Github` directly, so adding a backend is a change in
-//! one place. Today GitHub is the only implementation; the GitLab backend is
-//! specified in `docs/GITLAB.md`.
+//! one place. GitHub and GitLab are both implemented; see `docs/GITLAB.md` for
+//! the GitLab design.
 //!
 //! The pipeline is generic over the [`Forge`] trait, so a review runs against
-//! any backend that implements it. `connect*` returns the concrete GitHub
-//! client today; when GitLab lands, they switch to a dispatch enum (or
-//! `Box<dyn Forge>`) covering both — a change in this one place, with the
-//! pipeline untouched.
+//! any backend that implements it. `connect*` returns the [`ForgeClient`]
+//! dispatch enum, which covers both GitHub and GitLab — adding another backend
+//! is a change in this one place, with the pipeline untouched.
 
 use anyhow::Result;
 
@@ -105,9 +104,10 @@ pub fn parse_ref(cfg: &Config, url: &str) -> Result<PrRef> {
     }
 }
 
-/// Fail early and clearly for a forge that has no backend yet. Pure (no IO), so
-/// CLI and serve startup can both gate on it before doing any work — and it's
-/// unit-testable without constructing a client.
+/// Gate startup on the configured forge having a backend. Both GitHub and
+/// GitLab are supported today; this seam stays so a future forge fails early
+/// and clearly. Pure (no IO), so CLI and serve startup can both gate on it
+/// before doing any work — and it's unit-testable without constructing a client.
 pub fn ensure_supported(forge: ForgeKind) -> Result<()> {
     match forge {
         ForgeKind::GitHub | ForgeKind::GitLab => Ok(()),
