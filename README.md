@@ -43,7 +43,7 @@ broken variants against the configured local model:
 ```sh
 GREYBEARD_PROVIDER=openai \
 GREYBEARD_OPENAI_BASE_URL=http://dgx-spark1.fiber.house:8000/v1 \
-GREYBEARD_LENS_MODEL=Qwen3-Coder-Next \
+GREYBEARD_LENS_MODEL=qwen3-coder-next \
   cargo test --test review_verification local_model_rejects_false_positives_and_detects_mutants -- --ignored --nocapture
 ```
 
@@ -139,7 +139,7 @@ GREYBEARD_LENS_MODEL=us.anthropic.claude-opus-5 \
 # Use the local Qwen server (no model API key needed)
 GREYBEARD_PROVIDER=openai \
 GREYBEARD_OPENAI_BASE_URL=http://dgx-spark1.fiber.house:8000/v1 \
-GREYBEARD_LENS_MODEL=Qwen3-Coder-Next \
+GREYBEARD_LENS_MODEL=qwen3-coder-next \
   greybeard review https://github.com/acme/api/pull/482 --dry-run
 
 # No local toolchain? Run it straight from the Docker image
@@ -204,6 +204,7 @@ internet-facing ingress to `/webhook` + `/health`.
 | `GREYBEARD_MODEL_MAX_CONCURRENT` | simultaneous model requests per review; positive integer | 1 for openai; unlimited for other providers |
 | `GREYBEARD_LENS_MODEL` | model for discovery lenses | `claude-opus-5` (anthropic); **required** for bedrock and openai |
 | `GREYBEARD_VERIFY_MODEL` | model for eligibility + source-backed verification | the lens model — a weak verifier suppresses real findings |
+| `GREYBEARD_CONFIDENCE_THRESHOLD` | min verifier confidence (0-100) to publish a finding; below it → unverified | `80` (lower to re-calibrate a weaker/local verifier) |
 | `AWS_REGION` / `AWS_DEFAULT_REGION` | Bedrock region | `us-east-2` |
 | `GITHUB_TOKEN` / `GH_TOKEN` | GitHub token — alias for `GREYBEARD_TOKEN` | falls back to `gh auth token` |
 | `GREYBEARD_APP_ID` + `GREYBEARD_APP_PRIVATE_KEY` (pem path) + `GREYBEARD_APP_INSTALLATION_ID` | GitHub App identity — when set it takes precedence and comments post as the app bot; in serve mode the webhook payload's installation ID overrides the env pin | unset (user token) |
